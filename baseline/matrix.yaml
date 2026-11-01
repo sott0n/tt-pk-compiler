@@ -1,0 +1,48 @@
+mesh_device: P150x4
+
+cells:
+  - name: decode_b1_short
+    bench: qwen36_resident/tests/bench_resident_model.py::test_resident_decode_steps
+    env:
+      RESIDENT_BATCH: "1"
+      RESIDENT_POS: "100"
+      RESIDENT_STEPS: "3"
+
+  - name: decode_b8_short
+    bench: qwen36_resident/tests/bench_resident_model.py::test_resident_decode_steps
+    env:
+      RESIDENT_BATCH: "8"
+      RESIDENT_POS: "100"
+      RESIDENT_STEPS: "3"
+
+  - name: decode_b1_long
+    bench: qwen36_resident/tests/bench_resident_model.py::test_resident_decode_steps
+    env:
+      RESIDENT_BATCH: "1"
+      RESIDENT_POS: "32000"
+      RESIDENT_STEPS: "3"
+
+  - name: layer_time_gdn
+    bench: qwen36_resident/tests/bench_resident_model.py::test_resident_layer_time
+    env:
+      RESIDENT_POS: "100"
+
+  - name: ttft_511
+    bench: qwen36_resident/tests/bench_ttft.py
+    env: {}
+
+  - name: batch_sweep
+    bench: qwen36_resident/tests/bench_resident_batch.py
+    env: {}
+
+  - name: accuracy_decode
+    bench: qwen36_resident/tests/test_resident_accuracy.py::test_resident_accuracy
+    env: {}
+    requires_weights: true
+
+modes:
+  - trace_on
+  - trace_off
+
+profiling:
+  tracy: optional

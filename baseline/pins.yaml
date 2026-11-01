@@ -1,0 +1,19 @@
+resident:
+  repo: https://github.com/sott0n/tt-qwen-resident
+  commit: d6262e07cad16aadbc96e142ab9181c712cf050c
+
+tt_metal:
+  repo: https://github.com/tenstorrent/tt-metal
+  commit: 816841ddc93511b042267684c2fdcbb4974b3bec
+
+tt_mlir:
+  repo: https://github.com/tenstorrent/tt-mlir
+  commit: f9dc1b3e5101639a8d582c449117bdae26c8129f
+
+firmware:
+  tt_smi_min: "3.0.0"
+  blackhole_fw_bundle: "unknown"
+
+toolchain:
+  python: "3.10"
+  gcc: "11"
