@@ -1,0 +1,40 @@
+diff --git a/qwen36_resident/prefill/pp_prefill.py b/qwen36_resident/prefill/pp_prefill.py
+index 83b2e70..c8ce4cc 100644
+--- a/qwen36_resident/prefill/pp_prefill.py
++++ b/qwen36_resident/prefill/pp_prefill.py
+@@ -24,6 +24,7 @@ TP-sharded State.
+ import math
+ 
+ import torch
++from loguru import logger
+ 
+ import ttnn
+ from qwen36_resident import PKG_DIR
+@@ -154,6 +155,7 @@ class PPPrefill:
+         # ---- weights: stage-layer j of chip p is layer p * Ls + j
+         self.w = []
+         for j in range(self.Ls):
++            logger.info(f"PPPrefill: staging layer {j + 1}/{self.Ls}")
+             ws = [PW.layer(ck, p * self.Ls + j, interval) for p in range(n)]
+             stack = lambda key, f: torch.stack([f(w[key]) for w in ws])[:, None]
+             e = dict(
+diff --git a/qwen36_resident/weights.py b/qwen36_resident/weights.py
+index fcf6ddd..344315e 100644
+--- a/qwen36_resident/weights.py
++++ b/qwen36_resident/weights.py
+@@ -11,6 +11,7 @@ import os
+ 
+ import torch
+ from huggingface_hub import snapshot_download
++from loguru import logger
+ from safetensors import safe_open
+ 
+ from qwen36_resident.model import DK, DV, HD, NK, NQ, NV, is_attn
+@@ -129,6 +130,7 @@ def load(ck, d, layers, interval, with_head=True):
+     """the resident model's weight dict for the first `layers` layers (every layer its own copy)"""
+     w = dict(gdn=[], attn=[], mlp=[], out=[])
+     for i in range(layers):
++        logger.info(f"Q.load: layer {i + 1}/{layers}")
+         attn = is_attn(i, interval)
+         (w["attn"] if attn else w["gdn"]).append(attn_layer(ck, i, d) if attn else gdn_layer(ck, i, d))
+         w["out"].append(out_proj(ck, i, d, attn))

@@ -12,7 +12,8 @@ tt_mlir:
 
 firmware:
   tt_smi_min: "3.0.0"
-  blackhole_fw_bundle: "unknown"
+  blackhole_fw_bundle: "19.2.0"
+  ethernet_fw: "1.7.0"  # <1.8.0 disables Blackhole PTP trace stamping
 
 toolchain:
   python: "3.10"

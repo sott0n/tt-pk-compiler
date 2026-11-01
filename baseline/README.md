@@ -46,8 +46,19 @@ TRACE=on bash baseline/scripts/run_matrix.sh
 - Separate README numbers (sott0n/tt-qwen-resident) from newly-measured ones.
   README is a target. Local re-measurement is the baseline.
 
+## Resident local patch (ttft)
+
+- `patches/tt-qwen-resident-progress-logs.patch` adds 4 lines of
+  per-layer `logger.info` so weight-staging progress reaches stderr.
+- Without it, the TTFT bench stays silent long enough for the MCP
+  broker's 300 s silence watchdog to kill the job.
+- Apply before the ttft cell:
+  `git -C $HOME/tt-qwen-resident apply $PWD/baseline/patches/tt-qwen-resident-progress-logs.patch`
+- Any run with the patch applied will show `resident` as `-dirty`
+  in `pins.json`. That is expected until the change lands upstream.
+
 ## Not covered yet
 
 - Reader / compute / writer timeline + ring-wait capture (needs Tracy wiring).
 - host-fed vs device-fed sampling split (needs matrix dimension when flags land).
-- Firmware bundle version detection (`blackhole_fw_bundle` is `unknown`).
+- `accuracy_decode` cell requires a Qwen3.6 `.refpt` (set `RESIDENT_REFPT`).
