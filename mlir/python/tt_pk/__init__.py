@@ -10,6 +10,7 @@ from .materialize import materialize
 from .plan import CandidatePlan, CoreAssignment
 from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
                       KernelSpec)
+from .resident import ResidentOp, ResidentSchedule, lower_to_resident
 from .search import greedy_search
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "AnalysisProblem", "DecoderLayerSpec", "HardwareSpec", "KernelSpec",
     "CandidatePlan", "CoreAssignment",
     "greedy_search", "materialize",
+    "ResidentOp", "ResidentSchedule", "lower_to_resident",
 ]

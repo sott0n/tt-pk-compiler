@@ -3,11 +3,14 @@
 CP3 placeholder. Weights every kernel by (k * n) and assigns contiguous
 cores proportional to the sum of weights. Later checkpoints replace this
 with a real cost-model-driven search.
+
+The emitted CandidatePlan is in topological order: a kernel never appears
+before one of its producers. Materialize relies on this for ordering.
 """
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Set, Tuple
 
 from .plan import CandidatePlan, CoreAssignment
 from .problem import AnalysisProblem, KernelSpec
@@ -28,6 +31,32 @@ def _share_cores(total: int, weights: List[int]) -> List[int]:
     return raw
 
 
+def _topo_order(kernels: Tuple[KernelSpec, ...]) -> List[KernelSpec]:
+    producers: Dict[str, str] = {k.produces: k.name for k in kernels if k.produces}
+    pending: Dict[str, KernelSpec] = {k.name: k for k in kernels}
+    deps: Dict[str, Set[str]] = {
+        k.name: {producers[c] for c in k.consumes if c in producers}
+        for k in kernels
+    }
+    ordered: List[KernelSpec] = []
+    emitted: Set[str] = set()
+    while pending:
+        ready = [name for name, k in pending.items()
+                 if deps[name].issubset(emitted)]
+        if not ready:
+            raise RuntimeError(
+                f"dependency cycle or missing producer among: "
+                f"{sorted(pending.keys())}")
+        # Preserve the input order among same-level kernels so the plan
+        # stays stable across runs.
+        ready_sorted = sorted(ready,
+                              key=lambda n: list(pending.keys()).index(n))
+        for name in ready_sorted:
+            ordered.append(pending.pop(name))
+            emitted.add(name)
+    return ordered
+
+
 def greedy_search(problem: AnalysisProblem) -> CandidatePlan:
     hw = problem.hardware
     reserved = set(hw.reserved_cores)
@@ -38,7 +67,7 @@ def greedy_search(problem: AnalysisProblem) -> CandidatePlan:
                 continue
             cursor.append((x, y))
 
-    kernels = problem.layer.kernels
+    kernels = tuple(_topo_order(problem.layer.kernels))
     counts = _share_cores(len(cursor), _weights(kernels))
 
     assignments: List[CoreAssignment] = []

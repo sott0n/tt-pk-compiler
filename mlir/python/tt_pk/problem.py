@@ -16,6 +16,8 @@ class KernelSpec:
     name: str
     k: int
     n: int
+    produces: str = ""
+    consumes: Tuple[str, ...] = ()
     dtype: str = "bf16"
 
 
