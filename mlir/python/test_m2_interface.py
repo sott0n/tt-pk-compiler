@@ -50,7 +50,7 @@ def main() -> None:
     for op in schedule.ops:
         safe = op.kernel_name.replace(".", "_") + "_kernel"
         _check(safe in text, f"codegen names kernel {safe}")
-        _check(f"<{op.cores[0][0]}, {op.cores[0][1]}>" in text,
+        _check(f"({op.cores[0][0]}, {op.cores[0][1]})" in text,
                f"codegen carries first core of {op.kernel_name}")
 
     _check("kernel_cb<" in text, "codegen emits ttnn.kernel_cb descriptors")

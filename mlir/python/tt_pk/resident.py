@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 from .plan import CandidatePlan
-from .problem import AnalysisProblem, KernelSpec
+from .problem import AnalysisProblem, ComputeKernelConfig, KernelSpec
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ResidentOp:
     k: int
     n: int
     dtype: str
+    compute_config: ComputeKernelConfig
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ def lower_to_resident(problem: AnalysisProblem,
                       workers_cores: Optional[Tuple[Tuple[int, int], ...]] = None,
                       ) -> ResidentSchedule:
     by_name: Dict[str, KernelSpec] = {k.name: k for k in problem.layer.kernels}
+    hw_policy = problem.hardware.default_compute_config
     ops = []
     for assignment in plan.assignments:
         spec = by_name.get(assignment.kernel_name)
@@ -50,6 +52,11 @@ def lower_to_resident(problem: AnalysisProblem,
             raise KeyError(
                 f"plan references kernel {assignment.kernel_name!r} that is "
                 f"not in the AnalysisProblem")
+        cfg = spec.compute_config or hw_policy
+        if cfg is None:
+            raise ValueError(
+                f"kernel {spec.name!r} has no compute_config and hardware "
+                f"{problem.hardware.name!r} has no default policy")
         ops.append(ResidentOp(
             kernel_name=spec.name,
             cores=assignment.cores,
@@ -58,6 +65,7 @@ def lower_to_resident(problem: AnalysisProblem,
             k=spec.k,
             n=spec.n,
             dtype=spec.dtype,
+            compute_config=cfg,
         ))
     return ResidentSchedule(
         model_name=problem.model_name,

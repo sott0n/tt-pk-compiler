@@ -6,8 +6,8 @@ only; CP3 does not require them to drive an accurate placement.
 
 from __future__ import annotations
 
-from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
-                      KernelSpec)
+from .problem import (AnalysisProblem, ComputeKernelConfig, DecoderLayerSpec,
+                      HardwareSpec, KernelSpec)
 
 
 _HIDDEN = 4096
@@ -53,8 +53,19 @@ def bh_p150_hardware() -> HardwareSpec:
         [(0, y) for y in range(10)] +
         [(x, 0) for x in range(1, 13)]
     )
+    # Default compute-kernel policy for bf16 matmul on Blackhole: hifi4
+    # keeps accuracy; fp32 accumulation and sync flags off is the standard
+    # TTNN starting point for a projection kernel. KernelSpec can override.
+    policy = ComputeKernelConfig(
+        math_fidelity="hifi4",
+        fp32_dest_acc_en=False,
+        dst_full_sync_en=False,
+        bfp8_pack_precise=False,
+        math_approx_mode=False,
+    )
     return HardwareSpec(name="bh_p150", grid_x=13, grid_y=10,
-                        reserved_cores=reserved)
+                        reserved_cores=reserved,
+                        default_compute_config=policy)
 
 
 def qwen36_27b_problem() -> AnalysisProblem:

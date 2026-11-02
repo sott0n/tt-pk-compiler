@@ -1,3 +1,5 @@
 mlir/build/
 __pycache__/
 *.pyc
+.ttmlir-toolchain/
+third_party/tt-mlir/build/

@@ -8,7 +8,22 @@ mutate it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Optional, Tuple
+
+
+@dataclass(frozen=True)
+class ComputeKernelConfig:
+    """Compile-time config emitted on every TTNN compute_kernel attr.
+
+    Values mirror the required fields of `TTNN_ComputeKernelAttr`. The
+    compiler fills them from a per-kernel override or the hardware
+    policy default; it never invents them in the backend emitter.
+    """
+    math_fidelity: str
+    fp32_dest_acc_en: bool
+    dst_full_sync_en: bool
+    bfp8_pack_precise: bool
+    math_approx_mode: bool
 
 
 @dataclass(frozen=True)
@@ -24,6 +39,7 @@ class KernelSpec:
     # the num_heads / context-length axes that make attention expensive
     # at decode. Set this to override.
     cost: int = 0
+    compute_config: Optional[ComputeKernelConfig] = None
 
     def effective_cost(self) -> int:
         return self.cost if self.cost > 0 else max(1, self.k * self.n)
@@ -40,6 +56,7 @@ class HardwareSpec:
     grid_x: int
     grid_y: int
     reserved_cores: Tuple[Tuple[int, int], ...] = ()
+    default_compute_config: Optional[ComputeKernelConfig] = None
 
     def total_cores(self) -> int:
         return self.grid_x * self.grid_y - len(self.reserved_cores)

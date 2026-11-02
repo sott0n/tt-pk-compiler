@@ -109,8 +109,12 @@ def _kernel_sym(kernel_name: str) -> str:
 
 
 def _emit_core_ranges(cores: Tuple[Tuple[int, int], ...]) -> str:
-    pts = ", ".join(f"<{x}, {y}>" for x, y in cores)
-    return f"#ttnn.core_range_set<[{pts}]>"
+    # One 1x1 CoreRange per core. Coalescing contiguous rows into bigger
+    # CoreRange attrs is CP8 scope; what matters here is a syntax
+    # ttmlir-opt accepts.
+    ranges = ", ".join(f"#ttnn.core_range<({x}, {y}), ({x}, {y})>"
+                       for x, y in cores)
+    return f"#ttnn.core_range_set<[{ranges}]>"
 
 
 def _emit_cb(cb: CBSpec, cores_text: str) -> str:
@@ -144,8 +148,7 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
 
     lines = ["module {"]
     for op in schedule.ops:
-        lines.append(f"  func.func private {_kernel_sym(op.kernel_name)}()"
-                     " { /* opaque */ }")
+        lines.append(f"  func.func private {_kernel_sym(op.kernel_name)}()")
     lines.append("")
     lines.append("  func.func @decoder_layer() {")
     for op in schedule.ops:
@@ -158,9 +161,25 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
         sem_text = ", ".join(_emit_sem(s, cores_text) for s in op_sems)
         waits, signals = sem_table[op.kernel_name]
         operands = ", ".join(f"%{c}" for c in op.consumes) or "/* none */"
-        kernel_decl = (f"#ttnn.compute_kernel<symbol_ref = "
-                       f"{_kernel_sym(op.kernel_name)}, "
-                       f"core_ranges = {cores_text}>")
+        # Each CB needs an UnpackToDestMode entry; the enum is non-optional
+        # in the TD. "default" means "do not force fp32" and matches the
+        # policy fields; a bf16-first-class entry can land when the IR
+        # starts tracking per-CB precision overrides.
+        unpack_modes = ", ".join(["default"] * len(cbs))
+        cfg = op.compute_config
+        kernel_decl = (
+            f"#ttnn.compute_kernel<symbol_ref = {_kernel_sym(op.kernel_name)}"
+            f", core_ranges = {cores_text}"
+            f", math_fidelity = {cfg.math_fidelity}"
+            f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
+            f", dst_full_sync_en = {str(cfg.dst_full_sync_en).lower()}"
+            f", unpack_to_dest_modes = [{unpack_modes}]"
+            f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
+            f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
+            f", ct_args = []"
+            f", common_rt_args = []"
+            f", rt_args = []>"
+        )
         lines.append(
             f"    %{op.produces} = ttnn.generic {{"
             f" program = #ttnn.program<kernels = [{kernel_decl}], "

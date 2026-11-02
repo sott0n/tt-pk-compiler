@@ -1,9 +1,12 @@
-"""CP7b gate: TD-driven structural lint of the emitted TTNN text.
+"""CP7b gate: round-trip emitted TTNN attrs through in-tree ttmlir-opt.
 
-Real round-trip through tt-mlir's ttmlir-opt needs the tt-mlir dialect
-libraries built with the nix FHS toolchain (see mlir/INTERFACE.md). The
-lint stands in for now; it checks every attr the codegen emits against
-the parameter names declared in the submodule's TTNNOpsAttrs.td.
+Builds the Qwen3.6-27B schedule, emits its TTNN snippet, and parses each
+`#ttnn.program / kernel_cb / kernel_cb_format / kernel_semaphore /
+compute_kernel` attribute through ttmlir-opt. Requires the in-tree
+submodule binary; run `scripts/build_ttmlir.sh` once before running.
+
+A negative check mutates one required key and confirms ttmlir-opt rejects
+the broken attribute.
 """
 
 import os
@@ -12,8 +15,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
-from tt_pk import (TTNNLintError, emit_ttnn_generic, extract_td_params,
-                   greedy_search, lint, lower_to_resident, validate_td_sync)
+from tt_pk import (TTNNLintError, emit_ttnn_generic, ensure_available,
+                   greedy_search, lint, lower_to_resident)
 from tt_pk.qwen36 import qwen36_27b_problem
 
 
@@ -25,43 +28,29 @@ def _check(cond: bool, label: str) -> None:
 
 
 def main() -> None:
-    validate_td_sync()
-    _check(True, "lint required-keys are a subset of TD parameters")
-
-    expected = {
-        "TTNN_ProgramAttr": {"kernels", "cbs", "semaphores"},
-        "TTNN_KernelCBAttr": {"total_size", "core_ranges", "formats", "buffer"},
-        "TTNN_KernelCBFormatAttr": {"buffer_index", "dtype", "page_size"},
-        "TTNN_KernelSemaphoreAttr": {"id", "core_type", "core_ranges",
-                                     "initial_value"},
-    }
-    for symbol, want in expected.items():
-        got = extract_td_params(symbol)
-        _check(want.issubset(got),
-               f"TD {symbol} declares {sorted(want)}")
+    try:
+        ensure_available()
+    except TTNNLintError as e:
+        print(f"[SKIP] {e}")
+        return
 
     problem = qwen36_27b_problem()
     schedule = lower_to_resident(problem, greedy_search(problem))
     text = emit_ttnn_generic(schedule)
 
     result = lint(text)
-    _check("program" in result.attrs_seen, "lint saw ttnn.program attr")
-    _check("kernel_cb" in result.attrs_seen, "lint saw ttnn.kernel_cb attr")
-    _check("kernel_cb_format" in result.attrs_seen,
-           "lint saw ttnn.kernel_cb_format attr")
-    _check("kernel_semaphore" in result.attrs_seen,
-           "lint saw ttnn.kernel_semaphore attr")
-    _check("compute_kernel" in result.attrs_seen,
-           "lint saw ttnn.compute_kernel attr")
-    _check(result.attrs_missing_keys == (),
-           f"no attr instance is missing a required key "
-           f"(got {result.attrs_missing_keys})")
+    for attr in ("program", "kernel_cb", "kernel_cb_format",
+                 "kernel_semaphore", "compute_kernel"):
+        _check(attr in result.attrs_seen,
+               f"ttmlir-opt saw ttnn.{attr}")
+    _check(result.attrs_rejected == (),
+           f"ttmlir-opt accepted every emitted attr "
+           f"(rejected: {result.attrs_rejected})")
 
-    # Negative check: dropping a required key must fail the lint.
     broken = text.replace("total_size =", "garbage =", 1)
     broken_result = lint(broken)
-    _check(any(m[1] == "total_size" for m in broken_result.attrs_missing_keys),
-           "lint catches a missing total_size key")
+    _check(any("kernel_cb" == m[0] for m in broken_result.attrs_rejected),
+           "ttmlir-opt rejects a kernel_cb with a dropped total_size")
 
     print("OK")
 

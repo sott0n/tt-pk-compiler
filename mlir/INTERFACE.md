@@ -75,21 +75,29 @@ Fields the compiler fills in from `ResidentSchedule`:
 | `generic.operands` | ResidentOp.consumes → SSA refs |
 | `generic.results` | ResidentOp.produces → SSA ref |
 
-Fields now filled in (CP7a):
+Fields now filled in:
 
-- `cbs`: one `kernel_cb` per consumed tensor + one weight CB + one
-  output CB, sized as `double_buffer * ceil(K or N / 32) * 2112 bytes`
-  for bf16. Other dtypes raise.
-- `semaphores`: one `kernel_semaphore` per intra-layer producer→consumer
-  edge, dense ids starting at 0, `initial_value = 0`. Each ttnn.generic
-  op carries `waits` and `signals` id lists.
+- `cbs` (CP7a): one `kernel_cb` per consumed tensor + one weight CB +
+  one output CB, sized as `double_buffer * ceil(K or N / 32) * 2112
+  bytes` for bf16. Other dtypes raise.
+- `semaphores` (CP7a): one `kernel_semaphore` per intra-layer
+  producer→consumer edge, dense ids starting at 0,
+  `initial_value = 0`. Each ttnn.generic op carries `waits` and
+  `signals` id lists.
+- `compute_kernel` policy fields (CP7b): `math_fidelity`,
+  `fp32_dest_acc_en`, `dst_full_sync_en`, `bfp8_pack_precise`,
+  `math_approx_mode` come from `KernelSpec.compute_config`, falling
+  back to `HardwareSpec.default_compute_config`. The codegen never
+  invents these; a kernel without either errors in `lower_to_resident`.
 
-Fields still NOT filled in (CP7b+):
+Fields still NOT filled in (CP8+):
 
-- Kernel body function content: left as `/* opaque */`; needs CP7b
-  codegen that reads Resident runtime kernel sources.
+- Kernel body function content: emitted as a private declaration with
+  no body; a Resident runtime kernel-source importer lives in CP8.
 - Multi-dtype CB sizing (bfp8_b, bfp4_b): raises today.
 - Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
+- Coalescing contiguous cores into bigger `CoreRange` attrs; the
+  codegen emits one 1x1 range per worker today.
 
 ## Round-trip status
 
@@ -97,14 +105,19 @@ Fields still NOT filled in (CP7b+):
 - AnalysisProblem → CandidatePlan → tt_pk Program: works (CP3).
 - CandidatePlan → ResidentSchedule → plan.json: works (CP4, CP5b).
 - ResidentSchedule → emitted ttnn text snippet: works (CP6, CP7a).
-- Emitted ttnn text → TD-driven structural lint: works (CP7b, see
-  `tt_pk.ttnn_lint`). Every attr the codegen emits is cross-checked
-  against the parameter list extracted from `TTNNOpsAttrs.td`.
-- Emitted ttnn text → tt-mlir ttmlir-opt verify: still NOT WIRED. The
-  pinned-submodule ttmlir-opt depends transitively on tt-metal, and
-  the prebuilt `~/tt-mlir/build/bin/ttmlir-opt` needs glibc 2.38+
-  (host is 2.35). Real round-trip waits on a tt-mlir dialect build
-  that can link into tt-pk-opt directly.
+- Emitted ttnn text → in-tree `ttmlir-opt` round-trip: works (CP7b, see
+  `tt_pk.ttnn_lint`). Each emitted attribute is parsed back through
+  the submodule's own `ttmlir-opt` binary.
+
+To rebuild the in-tree binary from a fresh checkout:
+
+```
+scripts/build_ttmlir.sh
+```
+
+This stages a project-local toolchain at `.ttmlir-toolchain/` and
+builds `third_party/tt-mlir/build/bin/ttmlir-opt` with
+`TTMLIR_ENABLE_RUNTIME=OFF`, so no tt-metal link is required.
 
 ## Not covered (CP7+)
 
