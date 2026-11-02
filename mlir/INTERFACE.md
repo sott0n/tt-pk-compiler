@@ -96,9 +96,15 @@ Fields still NOT filled in (CP7b+):
 - Textual tt_pk Program → tt-pk-opt → VERIFY: works (CP2).
 - AnalysisProblem → CandidatePlan → tt_pk Program: works (CP3).
 - CandidatePlan → ResidentSchedule → plan.json: works (CP4, CP5b).
-- ResidentSchedule → emitted ttnn text snippet: works (this doc).
-- Emitted ttnn text → tt-mlir ttmlir-opt verify: NOT WIRED yet (needs
-  tt-mlir Python binding or a dedicated tt-pk-opt → ttmlir-opt bridge).
+- ResidentSchedule → emitted ttnn text snippet: works (CP6, CP7a).
+- Emitted ttnn text → TD-driven structural lint: works (CP7b, see
+  `tt_pk.ttnn_lint`). Every attr the codegen emits is cross-checked
+  against the parameter list extracted from `TTNNOpsAttrs.td`.
+- Emitted ttnn text → tt-mlir ttmlir-opt verify: still NOT WIRED. The
+  pinned-submodule ttmlir-opt depends transitively on tt-metal, and
+  the prebuilt `~/tt-mlir/build/bin/ttmlir-opt` needs glibc 2.38+
+  (host is 2.35). Real round-trip waits on a tt-mlir dialect build
+  that can link into tt-pk-opt directly.
 
 ## Not covered (CP7+)
 

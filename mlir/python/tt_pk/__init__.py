@@ -12,6 +12,8 @@ from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
                       KernelSpec)
 from .codegen import (CBSpec, SemSpec, derive_cbs, derive_semaphores,
                       emit_ttnn_generic)
+from .ttnn_lint import (LintResult, TTNNLintError, extract_td_params, lint,
+                        validate_td_sync)
 from .importer import (ImporterError, TTIR_WHITELIST, TTIRProvenance,
                        qwen36_provenance, validate_provenance)
 from .resident import (ResidentOp, ResidentSchedule, lower_to_resident,
@@ -29,4 +31,6 @@ __all__ = [
     "qwen36_provenance", "validate_provenance",
     "emit_ttnn_generic", "CBSpec", "SemSpec",
     "derive_cbs", "derive_semaphores",
+    "LintResult", "TTNNLintError", "extract_td_params", "lint",
+    "validate_td_sync",
 ]
