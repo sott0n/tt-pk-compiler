@@ -44,7 +44,13 @@ include(HandleLLVMOptions)
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/dialect/include)
+include_directories(${CMAKE_CURRENT_BINARY_DIR}/dialect/include)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
+
+if(NOT TARGET mlir-headers)
+  add_custom_target(mlir-headers)
+endif()
 
 add_subdirectory(dialect)

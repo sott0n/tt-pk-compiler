@@ -7,7 +7,11 @@ Native MLIR components of the Tensix Persistent Compiler.
 | Path | Purpose |
 |---|---|
 | `CMakeLists.txt` | Finds LLVM/MLIR, pulls in dialect subdirs |
-| `dialect/` | `tt_pk` dialect sources (ops, attributes, verifiers) |
+| `dialect/include/tt_pk/IR/` | TableGen (`.td`) + dialect C++ headers |
+| `dialect/lib/IR/` | Dialect + op implementations (including verifiers) |
+| `dialect/tools/tt-pk-opt/` | mlir-opt-style driver, registers `tt_pk` |
+| `dialect/test/` | Hand-written `.mlir` fixtures for parse+verify |
+| `python/tt_pk/` | Python surface: text builder + tt-pk-opt driver |
 
 ## LLVM / MLIR source
 
@@ -24,7 +28,20 @@ TT_PK_LLVM_BUILD_DIR=$HOME/tt-mlir/env/build/llvm-project-prefix/src/llvm-projec
   cmake -S mlir -B mlir/build -G Ninja
 ```
 
-## Configure
+## Build and test
 
-Configure alone is enough to confirm the LLVM/MLIR packages were discovered.
-Build targets appear starting at CP2.
+```
+TT_PK_LLVM_BUILD_DIR=$HOME/tt-mlir/env/build/llvm-project-prefix/src/llvm-project-build \
+  cmake -S mlir -B mlir/build -G Ninja
+ninja -C mlir/build tt-pk-opt
+mlir/build/dialect/tools/tt-pk-opt/tt-pk-opt mlir/dialect/test/core_set_disjoint_ok.mlir
+mlir/build/dialect/tools/tt-pk-opt/tt-pk-opt mlir/dialect/test/qwen36_decode.mlir
+python3 mlir/python/test_builder.py
+```
+
+The `-fail` test prints a verifier error and exits non-zero on purpose — it
+pins the `CoreSetDisjoint` message.
+
+A C shim in `dialect/tools/tt-pk-opt/compat_arc4random.c` lets the pre-built
+nix LLVM archives link on glibc 2.35; glibc 2.38+ hosts drop the shim at
+preprocess time.
