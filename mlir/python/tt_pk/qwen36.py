@@ -16,6 +16,13 @@ _NUM_HEADS = 32
 _NUM_KV_HEADS = 8
 _INTERMEDIATE = 11008
 _QKV_OUT = _HEAD_DIM * (_NUM_HEADS + 2 * _NUM_KV_HEADS)
+# Attention weight calibrated so attention gets ~10-15% of the worker
+# grid at the Qwen3.6-27B shape, roughly matching the compute share
+# observed in the M0 Resident baseline. The decode-side scaling factor
+# is a tuning constant, not a true context length; a real roofline-ish
+# cost model lands in a later checkpoint.
+_ATTN_DECODE_SCALE = 64
+_ATTN_COST = _HEAD_DIM * _HEAD_DIM * _NUM_HEADS * _ATTN_DECODE_SCALE
 
 
 def qwen36_27b_layer() -> DecoderLayerSpec:
@@ -23,7 +30,8 @@ def qwen36_27b_layer() -> DecoderLayerSpec:
         KernelSpec("qwen36.qkv_proj", k=_HIDDEN, n=_QKV_OUT,
                    produces="qkv", consumes=("x_norm",)),
         KernelSpec("qwen36.attention", k=_HEAD_DIM, n=_HEAD_DIM,
-                   produces="attn", consumes=("qkv",)),
+                   produces="attn", consumes=("qkv",),
+                   cost=_ATTN_COST),
         KernelSpec("qwen36.o_proj", k=_HEAD_DIM * _NUM_HEADS, n=_HIDDEN,
                    produces="attn_proj", consumes=("attn",)),
         KernelSpec("qwen36.mlp_gate", k=_HIDDEN, n=_INTERMEDIATE,
@@ -36,9 +44,17 @@ def qwen36_27b_layer() -> DecoderLayerSpec:
 
 
 def bh_p150_hardware() -> HardwareSpec:
-    # Conservative worker grid for CP3; refined once tt-metal cluster spec
-    # is wired into the compiler.
-    return HardwareSpec(name="bh_p150", grid_x=10, grid_y=7)
+    # Blackhole P150 Tensix grid is 13 x 10 (130 workers before reserves).
+    # Dispatcher takes column 0, ethernet reserves the top edge; those
+    # tiles are blocked out so the search can only land on true workers.
+    # Numbers are conservative placeholders until the tt-metal cluster
+    # spec is parsed into the compiler.
+    reserved = tuple(
+        [(0, y) for y in range(10)] +
+        [(x, 0) for x in range(1, 13)]
+    )
+    return HardwareSpec(name="bh_p150", grid_x=13, grid_y=10,
+                        reserved_cores=reserved)
 
 
 def qwen36_27b_problem() -> AnalysisProblem:

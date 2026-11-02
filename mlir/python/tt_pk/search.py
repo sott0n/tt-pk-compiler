@@ -17,7 +17,7 @@ from .problem import AnalysisProblem, KernelSpec
 
 
 def _weights(kernels: Tuple[KernelSpec, ...]) -> List[int]:
-    return [max(1, k.k * k.n) for k in kernels]
+    return [k.effective_cost() for k in kernels]
 
 
 def _share_cores(total: int, weights: List[int]) -> List[int]:

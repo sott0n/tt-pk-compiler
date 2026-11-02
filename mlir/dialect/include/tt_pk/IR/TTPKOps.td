@@ -8,8 +8,9 @@ def TTPK_CoreSetOp : TTPK_Op<"core_set", [Pure]> {
   let summary = "Define a set of Tensix cores";
   let description = [{
     The `cores` attribute is a flat `[x0, y0, x1, y1, ...]` list of
-    non-negative core coordinates. Length must be even; order is not
-    semantically significant.
+    non-negative core coordinates. Length must be even and non-zero; order
+    is not semantically significant. Duplicate coordinates within the same
+    set are rejected (CoresUniqueWithinSet).
   }];
 
   let arguments = (ins DenseI64ArrayAttr:$cores);
@@ -36,9 +37,13 @@ def TTPK_KernelOp : TTPK_Op<"kernel"> {
 def TTPK_ProgramOp : TTPK_Op<"program", [NoTerminator]> {
   let summary = "Container for a materialized Tensix Persistent Program";
   let description = [{
-    Holds a region of placement and kernel ops. The verifier enforces that
-    all contained `tt_pk.core_set` values are pairwise disjoint, so
-    placement bugs surface at parse time.
+    Holds a region of placement and kernel ops. The verifier enforces four
+    structural invariants on the body:
+      - CoreSetDisjoint: no (x,y) appears in two `tt_pk.core_set` ops.
+      - UniqueKernelName: no two `tt_pk.kernel` ops share a name.
+      - CoreSetHasConsumer: every `tt_pk.core_set` is launched by at least
+        one kernel.
+    (NonEmptyCoreSet and CoresUniqueWithinSet are enforced on CoreSetOp.)
   }];
 
   let regions = (region AnyRegion:$body);

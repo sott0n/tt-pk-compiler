@@ -19,6 +19,14 @@ class KernelSpec:
     produces: str = ""
     consumes: Tuple[str, ...] = ()
     dtype: str = "bf16"
+    # Explicit per-token cost for the search's weighted share. When 0, the
+    # search falls back to k*n, which is fine for projections but blind to
+    # the num_heads / context-length axes that make attention expensive
+    # at decode. Set this to override.
+    cost: int = 0
+
+    def effective_cost(self) -> int:
+        return self.cost if self.cost > 0 else max(1, self.k * self.n)
 
 
 @dataclass(frozen=True)
