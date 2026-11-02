@@ -75,12 +75,21 @@ Fields the compiler fills in from `ResidentSchedule`:
 | `generic.operands` | ResidentOp.consumes → SSA refs |
 | `generic.results` | ResidentOp.produces → SSA ref |
 
-Fields NOT yet filled in (CP6+ scope):
+Fields now filled in (CP7a):
 
-- `cbs`: left as placeholder `[]`; needs memory-size pass.
-- `semaphores`: left as placeholder `[]`; needs sync pass.
-- Kernel body function content: left as `/* opaque */`; needs CP7 codegen
-  that reads Resident runtime kernel sources.
+- `cbs`: one `kernel_cb` per consumed tensor + one weight CB + one
+  output CB, sized as `double_buffer * ceil(K or N / 32) * 2112 bytes`
+  for bf16. Other dtypes raise.
+- `semaphores`: one `kernel_semaphore` per intra-layer producer→consumer
+  edge, dense ids starting at 0, `initial_value = 0`. Each ttnn.generic
+  op carries `waits` and `signals` id lists.
+
+Fields still NOT filled in (CP7b+):
+
+- Kernel body function content: left as `/* opaque */`; needs CP7b
+  codegen that reads Resident runtime kernel sources.
+- Multi-dtype CB sizing (bfp8_b, bfp4_b): raises today.
+- Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
 
 ## Round-trip status
 
