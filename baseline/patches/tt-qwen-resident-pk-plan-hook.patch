@@ -1,0 +1,67 @@
+diff --git a/qwen36_resident/common.py b/qwen36_resident/common.py
+index 4fb386d..c0f514f 100644
+--- a/qwen36_resident/common.py
++++ b/qwen36_resident/common.py
+@@ -1,6 +1,7 @@
+ # SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
+ # SPDX-License-Identifier: Apache-2.0
+ """Model dimensions and the streamer layout helpers shared by the resident decode, the prefill and the benches."""
++import json
+ import os
+ import struct
+ 
+@@ -8,6 +9,19 @@ import torch
+ 
+ import ttnn
+ 
++
++def read_pk_plan():
++    """Return the tt-pk-compiler plan if RESIDENT_PK_PLAN points at a JSON file.
++
++    Used by model.py to swap hardcoded worker rectangles for a compiler-driven
++    placement. Any field not in the plan falls through to Resident's own logic.
++    """
++    path = os.environ.get("RESIDENT_PK_PLAN")
++    if not path:
++        return None
++    with open(path) as f:
++        return json.load(f)
++
+ TILE = 32
+ TILE_BYTES = {ttnn.bfloat8_b: 1088, ttnn.bfloat4_b: 576}
+ HIDDEN = 5120
+diff --git a/qwen36_resident/model.py b/qwen36_resident/model.py
+index 542e33d..5654d6c 100644
+--- a/qwen36_resident/model.py
++++ b/qwen36_resident/model.py
+@@ -39,6 +39,7 @@ from qwen36_resident.common import (
+     f32_bits,
+     gate_up_core_cols,
+     quantize,
++    read_pk_plan,
+     rect_cover,
+     split,
+     streamer_cores,
+@@ -466,7 +467,22 @@ class ResidentModel:
+         hub = next(ttnn.CoreCoord(x, y) for x in range(x0r, x1r + 1) for y in range(y0r, y1r + 1) if (x, y) not in used)
+         used.add((hub.x, hub.y))
+         workers = worker_rect(mesh, used, WORKERS)
++        _pk_plan = read_pk_plan()
++        if _pk_plan is not None and "workers_cores" in _pk_plan:
++            _ov = [ttnn.CoreCoord(int(x), int(y)) for x, y in _pk_plan["workers_cores"]]
++            assert len(_ov) == WORKERS, (
++                f"RESIDENT_PK_PLAN workers_cores len {len(_ov)} != WORKERS {WORKERS}")
++            for _c in _ov:
++                assert (_c.x, _c.y) not in used, (
++                    f"RESIDENT_PK_PLAN worker ({_c.x},{_c.y}) collides with earlier placements")
++            workers = _ov
+         used |= {(c.x, c.y) for c in workers}
++        if os.environ.get("RESIDENT_PK_PROBE"):
++            import json as _json, sys as _sys
++            print("[RESIDENT_PK_PROBE]", _json.dumps({
++                "workers_cores": [[c.x, c.y] for c in workers],
++                "hub_core": [hub.x, hub.y],
++            }), file=_sys.stderr, flush=True)
+         cgrid = mesh.compute_with_storage_grid_size()
+         free = [ttnn.CoreCoord(x, y) for y in range(cgrid.y) for x in range(cgrid.x) if (x, y) not in used]
+         # GDN head cores: G per value head (head-major: core hh * G + g), core g of a head takes users

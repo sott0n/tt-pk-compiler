@@ -13,7 +13,8 @@
 #   TRACE          "on" | "off" (toggle TT_METAL_PROGRAM_TRACE)
 set -euo pipefail
 
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+BASELINE_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ROOT=$BASELINE_ROOT
 RESIDENT=${RESIDENT_DIR:-$HOME/tt-qwen-resident}
 RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 OUT=$ROOT/results/$RUN_ID
@@ -33,6 +34,9 @@ cp "$ROOT/matrix.yaml" "$OUT/matrix.yaml"
 
 # shellcheck disable=SC1091
 source "$RESIDENT/scripts/env.sh"
+# Resident's env.sh resets $ROOT to its own repo; restore ours for the yq
+# lookups below.
+ROOT=$BASELINE_ROOT
 
 if [[ ${TRACE:-off} == on ]]; then export TT_METAL_PROGRAM_TRACE=1; else unset TT_METAL_PROGRAM_TRACE; fi
 

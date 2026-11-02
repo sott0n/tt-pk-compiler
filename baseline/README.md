@@ -57,6 +57,18 @@ TRACE=on bash baseline/scripts/run_matrix.sh
 - Any run with the patch applied will show `resident` as `-dirty`
   in `pins.json`. That is expected until the change lands upstream.
 
+## Resident local patch (pk-plan hook)
+
+- `patches/tt-qwen-resident-pk-plan-hook.patch` adds a 20-line
+  `read_pk_plan()` helper and a `workers` override block.
+- Lets `RESIDENT_PK_PROBE=1` log the live `workers_cores` / `hub_core`
+  layout and `RESIDENT_PK_PLAN=<json>` replace the hardcoded worker
+  rectangle with a tt-pk-compiler-emitted one.
+- Apply once:
+  `git -C $HOME/tt-qwen-resident apply $PWD/baseline/patches/tt-qwen-resident-pk-plan-hook.patch`
+- The hook is behaviorally neutral when the plan matches Resident's
+  own `worker_rect` output; see CP5b note at `~/.tt-buddy/notes/tt-pk-compiler.md`.
+
 ## Not covered yet
 
 - Reader / compute / writer timeline + ring-wait capture (needs Tracy wiring).
