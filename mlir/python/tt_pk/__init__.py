@@ -10,6 +10,9 @@ from .materialize import materialize
 from .plan import CandidatePlan, CoreAssignment
 from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
                       KernelSpec)
+from .codegen import emit_ttnn_generic
+from .importer import (ImporterError, TTIR_WHITELIST, TTIRProvenance,
+                       qwen36_provenance, validate_provenance)
 from .resident import (ResidentOp, ResidentSchedule, lower_to_resident,
                        to_json as resident_to_json)
 from .search import greedy_search
@@ -21,4 +24,7 @@ __all__ = [
     "greedy_search", "materialize",
     "ResidentOp", "ResidentSchedule", "lower_to_resident",
     "resident_to_json",
+    "ImporterError", "TTIR_WHITELIST", "TTIRProvenance",
+    "qwen36_provenance", "validate_provenance",
+    "emit_ttnn_generic",
 ]
