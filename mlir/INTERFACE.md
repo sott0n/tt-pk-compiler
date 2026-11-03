@@ -4,6 +4,39 @@ Defines what the Tensix Persistent Kernel compiler reads from tt-mlir and
 what it lowers back into. Scope is the Qwen3.6-27B decoder layer. Any op
 outside this contract is CP6+ scope.
 
+## Responsibility split: compiler vs AI agent
+
+The compiler is one half of the system. An AI agent sits above it and owns
+the perf-tuning loop. The split is fixed:
+
+| Concern | Compiler | AI agent |
+|---|---|---|
+| Legal placement (which cores are workers) | yes | no |
+| DRAM/L1 layout decisions that affect correctness | yes | no |
+| Topological schedule / dependency order | yes | no |
+| Semaphore / sync graph | yes | no |
+| CB shape, dtype, tile count | yes | no |
+| Multi-chip split axis (TP, PP) | yes | no |
+| Kernel role assignment (reader / compute / writer) | yes | no |
+| Set of **legal** kernel body candidates per slot | yes | no |
+| Which candidate wins per slot | no | yes |
+| Per-kernel knobs (inner tile K, unroll, …) | no | yes |
+| Hardware run and perf measurement | no | yes |
+
+Interface point: `#ttnn.source_compute_kernel<source = "...">` (and the
+reader / writer variants) is a **slot**. The compiler emits the slot plus
+its structural constraints (CB formats, cores, args). The agent fills the
+`source` field. The compiler then re-verifies that the chosen body
+matches those constraints — identical CB shapes, identical rt_arg list,
+same core_ranges.
+
+What this split rules out of compiler scope:
+
+- Perf-driven variant selection. The compiler's cost model is HW
+  feasibility only (does the Plan fit L1 / bandwidth), not ranking.
+- Autotuning kernel internals.
+- Reading real device timings.
+
 ## Pipeline position
 
 ```
@@ -149,8 +182,42 @@ builds `third_party/tt-mlir/build/bin/ttmlir-opt` with
 ## Not covered (CP11+)
 
 - Compiler-generated kernel bodies (CP8/CP9 import external C++; they
-  do not synthesize one).
+  do not synthesize one). Compiler-synthesis is NOT a goal — the agent
+  selects between legal external bodies.
 - Semaphore graph lowered from async-live-range analysis (D9).
-- Multi-chip / mesh codegen (needs tt-mlir mesh attrs).
+- Multi-chip / mesh codegen (needs tt-mlir mesh attrs). Required for S1
+  because tt-qwen-resident runs on QB2 (4× Blackhole P150 mesh).
 - ttir → tt-pk importer that actually parses MLIR text (needs Python
   binding to tt-mlir dialect registry).
+- Compiler-side perf tuning. See **Responsibility split** — perf is
+  the agent's loop, not the compiler's.
+
+## Plan toward S1 / S2 (compiler side only)
+
+The final goal is a compiler whose output drives persistent kernels for
+arbitrary LLMs on Blackhole, with perf delivered by the agent on top.
+Reaching it in order:
+
+| Stage | Done when | Device |
+|---|---|---|
+| S1 | tt-qwen-resident equivalent compiles end to end | QB2 (4× BH P150) |
+| S2 | A second LLM (e.g. GLM) compiles end to end | QB2 or single P150 |
+| S3 | — (perf; agent-side, not tracked here) | — |
+
+S1 breakdown:
+
+- M1: one attention layer compiles and runs on a single BH die
+  (functional, output shape + value tolerance ±1e-3).
+- M2: same layer compiles to a 4-chip TP mesh on QB2.
+- M3: one Gated DeltaNet layer compiles and runs.
+- M4: 48 GDN + 16 attention layers stacked for decode.
+- M5: prefill (PP) + decode (TP) + handoff kernel.
+
+S2 breakdown:
+
+- M6: real TTIR parse via tt-mlir Python binding; one GLM layer compiles.
+- M7: full GLM decode compiles end to end.
+
+The existing 6-kernel Qwen scaffold under `python/tt_pk/qwen36.py` is
+Transformer-shaped and does not match tt-qwen-resident's GDN + attention
+mix. M1 reshapes it to be data-driven over the actual topology.
