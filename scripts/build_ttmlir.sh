@@ -47,8 +47,10 @@ for soname in libz.so libz.so.1; do
   fi
 done
 
-# Stage 2: ttmlir-opt. Runtime stays off so no tt-metal link.
-echo "[build_ttmlir] stage 2: ttmlir-opt"
+# Stage 2: ttmlir-opt + ttmlir-translate. Runtime stays off so no tt-metal link.
+# ttmlir-translate is needed to lower emitted TTNN text to a .ttnn flatbuffer
+# that ttrt (from a separate runtime-on build) can run on hardware.
+echo "[build_ttmlir] stage 2: ttmlir-opt + ttmlir-translate"
 cmake -S "$SRC" -B "$MAIN_BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER="$CC" \
@@ -60,6 +62,6 @@ cmake -S "$SRC" -B "$MAIN_BUILD" -G Ninja \
   -DTTMLIR_ENABLE_ALCHEMIST=OFF \
   -DTTMLIR_ENABLE_EXPLORER=OFF \
   -DTTMLIR_ENABLE_STABLEHLO=OFF
-cmake --build "$MAIN_BUILD" --target ttmlir-opt
+cmake --build "$MAIN_BUILD" --target ttmlir-opt ttmlir-translate
 
-echo "[build_ttmlir] done: $MAIN_BUILD/bin/ttmlir-opt"
+echo "[build_ttmlir] done: $MAIN_BUILD/bin/{ttmlir-opt,ttmlir-translate}"

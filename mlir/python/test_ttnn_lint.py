@@ -40,7 +40,7 @@ def main() -> None:
 
     result = lint(text)
     for attr in ("program", "kernel_cb", "kernel_cb_format",
-                 "kernel_semaphore", "compute_kernel"):
+                 "source_compute_kernel"):
         _check(attr in result.attrs_seen,
                f"ttmlir-opt saw ttnn.{attr}")
     _check(result.attrs_rejected == (),

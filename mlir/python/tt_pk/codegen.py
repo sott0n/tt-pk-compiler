@@ -127,12 +127,11 @@ def _kernel_sym(kernel_name: str) -> str:
 
 
 def _emit_core_ranges(cores: Tuple[Tuple[int, int], ...]) -> str:
-    # One 1x1 CoreRange per core. Coalescing contiguous rows into bigger
-    # CoreRange attrs is CP8 scope; what matters here is a syntax
-    # ttmlir-opt accepts.
+    # Nested-list form; the ttnn.generic verifier wants the array literal
+    # directly on the `core_ranges` field, not a `#ttnn.core_range_set`.
     ranges = ", ".join(f"#ttnn.core_range<({x}, {y}), ({x}, {y})>"
                        for x, y in cores)
-    return f"#ttnn.core_range_set<[{ranges}]>"
+    return f"<[{ranges}]>"
 
 
 def _emit_cb(cb: CBSpec, cores_text: str) -> str:
@@ -157,32 +156,23 @@ def _emit_data_kernel(mnemonic: str, body: str, cores_text: str) -> str:
             f", rt_args = []>")
 
 
+_COMPUTE_STUB = "// compute kernel stub"
+_READER_STUB = "// reader kernel stub"
+_WRITER_STUB = "// writer kernel stub"
+
+
 def _emit_compute_kernel(op: ResidentOp, cores_text: str,
                          cb_count: int) -> str:
     # Each CB needs an UnpackToDestMode entry; the enum is non-optional
-    # in the TD. "default" means "do not force fp32" and matches the
-    # policy fields; a bf16-first-class entry can land when the IR
-    # starts tracking per-CB precision overrides.
+    # in the TD. The flatbuffer target refuses the symbol_ref form unless
+    # a matching ttkernel.func lives in the module, so default to a stub
+    # inline source when the KernelSpec carries none. The agent swaps it.
     unpack_modes = ", ".join(["default"] * cb_count)
     cfg = op.compute_config
-    body_src = op.compute_kernel_source
-    if body_src is not None:
-        src_lit = f"\"{escape_for_mlir(body_src)}\""
-        return (
-            f"#ttnn.source_compute_kernel<source = {src_lit}"
-            f", core_ranges = {cores_text}"
-            f", math_fidelity = {cfg.math_fidelity}"
-            f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
-            f", dst_full_sync_en = {str(cfg.dst_full_sync_en).lower()}"
-            f", unpack_to_dest_modes = [{unpack_modes}]"
-            f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
-            f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
-            f", ct_args = []"
-            f", common_rt_args = []"
-            f", rt_args = []>"
-        )
+    body_src = op.compute_kernel_source or _COMPUTE_STUB
+    src_lit = f"\"{escape_for_mlir(body_src)}\""
     return (
-        f"#ttnn.compute_kernel<symbol_ref = {_kernel_sym(op.kernel_name)}"
+        f"#ttnn.source_compute_kernel<source = {src_lit}"
         f", core_ranges = {cores_text}"
         f", math_fidelity = {cfg.math_fidelity}"
         f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
@@ -196,54 +186,89 @@ def _emit_compute_kernel(op: ResidentOp, cores_text: str,
     )
 
 
-def _per_op_sem_waits(schedule: ResidentSchedule,
-                      sems: Tuple[SemSpec, ...]
-                      ) -> Dict[str, Tuple[Tuple[int, ...], Tuple[int, ...]]]:
-    waits: Dict[str, List[int]] = {op.kernel_name: [] for op in schedule.ops}
-    signals: Dict[str, List[int]] = {op.kernel_name: [] for op in schedule.ops}
-    for s in sems:
-        waits[s.consumer].append(s.id)
-        signals[s.producer].append(s.id)
-    return {name: (tuple(waits[name]), tuple(signals[name]))
-            for name in waits}
+def _mlir_elt(dtype: str) -> str:
+    # Bit-packed TTNN dtypes have no MLIR tensor element type; carry them
+    # on CB formats and fall back to bf16 at the tensor level.
+    return "bf16" if dtype.startswith("bfp") else dtype
+
+
+def _tile_grid(k: int, n: int) -> Tuple[int, int]:
+    return max(1, (k + 31) // 32), max(1, (n + 31) // 32)
 
 
 def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
-    sems = derive_semaphores(schedule)
-    sem_table = _per_op_sem_waits(schedule, sems)
-
-    lines = ["module {"]
+    tensor_shape: Dict[str, Tuple[int, int]] = {}
+    tensor_dtype: Dict[str, str] = {}
+    arg_order: List[str] = []
+    seen: set = set()
     for op in schedule.ops:
-        if op.compute_kernel_source is None:
-            lines.append(f"  func.func private {_kernel_sym(op.kernel_name)}()")
+        for name in op.consumes:
+            tensor_shape.setdefault(name, (op.k, op.n))
+            tensor_dtype.setdefault(name, op.dtype)
+            if name not in seen:
+                arg_order.append(name); seen.add(name)
+        tensor_shape[op.produces] = (op.k, op.n)
+        tensor_dtype[op.produces] = op.dtype
+        if op.produces not in seen:
+            arg_order.append(op.produces); seen.add(op.produces)
+
+    layouts: Dict[Tuple[int, int, str], str] = {}
+
+    def layout_for(name: str) -> Tuple[str, str, int, int]:
+        k, n = tensor_shape[name]
+        elt = _mlir_elt(tensor_dtype[name])
+        key = (k, n, elt)
+        if key not in layouts:
+            layouts[key] = f"#ttnn_layout{len(layouts)}"
+        return layouts[key], elt, k, n
+
+    arg_type: Dict[str, str] = {}
+    for name in arg_order:
+        alias, elt, k, n = layout_for(name)
+        arg_type[name] = f"tensor<{k}x{n}x{elt}, {alias}>"
+
+    lines: List[str] = ["#dram = #ttnn.buffer_type<dram>"]
+    for (k, n, elt), alias in layouts.items():
+        kt, nt = _tile_grid(k, n)
+        lines.append(
+            f"{alias} = #ttnn.ttnn_layout<"
+            f"(d0, d1) -> (d0, d1), <1x1>, "
+            f"memref<{kt}x{nt}x!ttcore.tile<32x32, {elt}>, #dram>, "
+            f"<interleaved>>")
     lines.append("")
-    lines.append("  func.func @decoder_layer() {")
+    lines.append("module {")
+
+    args_text = ", ".join(f"%{n}: {arg_type[n]}" for n in arg_order)
+    final = schedule.ops[-1].produces
+    func_sym = f"{schedule.model_name}_graph".replace(".", "_")
+    lines.append(
+        f"  func.func @{func_sym}({args_text}) -> {arg_type[final]} "
+        f"attributes {{tt.function_type = \"forward_device\"}} {{")
+
     for op in schedule.ops:
         cores_text = _emit_core_ranges(op.cores)
         cbs = derive_cbs(op)
         cb_text = ", ".join(_emit_cb(cb, cores_text) for cb in cbs)
-        op_sems = [s for s in sems
-                   if s.producer == op.kernel_name
-                   or s.consumer == op.kernel_name]
-        sem_text = ", ".join(_emit_sem(s, cores_text) for s in op_sems)
-        waits, signals = sem_table[op.kernel_name]
-        operands = ", ".join(f"%{c}" for c in op.consumes) or "/* none */"
         kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
-        if op.reader_kernel_source is not None:
-            kernels_text.append(_emit_data_kernel(
-                "source_read_kernel", op.reader_kernel_source, cores_text))
-        if op.writer_kernel_source is not None:
-            kernels_text.append(_emit_data_kernel(
-                "source_write_kernel", op.writer_kernel_source, cores_text))
+        reader_src = op.reader_kernel_source or _READER_STUB
+        writer_src = op.writer_kernel_source or _WRITER_STUB
+        kernels_text.append(_emit_data_kernel(
+            "source_read_kernel", reader_src, cores_text))
+        kernels_text.append(_emit_data_kernel(
+            "source_write_kernel", writer_src, cores_text))
         kernel_decl = ", ".join(kernels_text)
+
+        operands = list(op.consumes) + [op.produces]
+        operand_vals = ", ".join(f"%{t}" for t in operands)
+        operand_types = ", ".join(arg_type[t] for t in operands)
         lines.append(
-            f"    %{op.produces} = ttnn.generic {{"
-            f" program = #ttnn.program<kernels = [{kernel_decl}], "
-            f"cbs = [{cb_text}], semaphores = [{sem_text}]> "
-            f"}} {{waits = {list(waits)}, signals = {list(signals)}}} : "
-            f"({operands}) -> tensor<_>"
-        )
-    lines.append("    return")
+            f"    \"ttnn.generic\"({operand_vals}) <{{"
+            f"operandSegmentSizes = array<i32: {len(operands)}, 0>, "
+            f"program = #ttnn.program<kernels = [{kernel_decl}], "
+            f"cbs = [{cb_text}], semaphores = []>}}> : "
+            f"({operand_types}) -> ()")
+
+    lines.append(f"    return %{final} : {arg_type[final]}")
     lines.append("  }")
     lines.append("}")
     lines.append("")

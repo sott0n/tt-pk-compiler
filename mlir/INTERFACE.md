@@ -141,10 +141,16 @@ Fields now filled in:
   the CB's `dtype` field now echoes `op.dtype` directly. An unknown
   dtype raises `NotImplementedError`.
 
-Fields still NOT filled in (CP11+):
+Fields still NOT filled in (M1+):
 - Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
 - Coalescing contiguous cores into bigger `CoreRange` attrs; the
   codegen emits one 1x1 range per worker today.
+- Real multi-core sharding on the `#ttnn.ttnn_layout` grid; the
+  module currently emits a `<1x1>` grid per tensor.
+- Intra-layer `#ttnn.kernel_semaphore` list — `semaphores = []` is
+  what the flatbuffer target expects for the host-fed signalling
+  pattern tt-qwen-resident uses; the semantic edge graph still lives
+  on `ResidentSchedule` for Resident-side consumption.
 
 ## Round-trip status
 
@@ -152,22 +158,19 @@ Fields still NOT filled in (CP11+):
 - AnalysisProblem → CandidatePlan → tt_pk Program: works (CP3).
 - CandidatePlan → ResidentSchedule → plan.json: works (CP4, CP5b).
 - ResidentSchedule → emitted ttnn text snippet: works (CP6, CP7a).
-- Emitted ttnn text → in-tree `ttmlir-opt` round-trip: works (CP7b, see
-  `tt_pk.ttnn_lint`). Each emitted attribute is parsed back through
-  the submodule's own `ttmlir-opt` binary.
-- Compute-kernel C++ body import → `#ttnn.source_compute_kernel`
-  round-trip: works (CP8, see `test_kernel_source.py`). The fixture
-  at `python/testdata/kernels/qwen36_qkv_proj.cpp` is the in-tree
-  reference body.
-- Reader/writer kernel C++ body import →
-  `#ttnn.source_read_kernel` / `#ttnn.source_write_kernel` round-trip:
-  works (CP9, same test). Fixtures at
-  `python/testdata/kernels/qwen36_qkv_proj_reader.cpp` and
-  `..._writer.cpp`.
-- Per-dtype CB page sizing → `#ttnn.kernel_cb_format` round-trip across
-  all TTNN DataType spellings: works (CP10, see
-  `test_multi_dtype_cb.py`). `bfp_bf8` and `f32` snippets parse back
-  through the submodule's `ttmlir-opt`.
+- Emitted ttnn text → in-tree `ttmlir-opt` attr round-trip: works
+  (CP7b, see `tt_pk.ttnn_lint`).
+- Compute / reader / writer C++ body import → inline-source kernel
+  attrs round-trip: works (CP8, CP9).
+- Per-dtype CB page sizing → `#ttnn.kernel_cb_format` round-trip:
+  works (CP10).
+- Emitted module → `ttmlir-opt --ttcore-register-device` →
+  `ttmlir-translate --ttnn-to-flatbuffer` → `.ttnn` flatbuffer:
+  works (M1 plumbing, see `test_flatbuffer_roundtrip.py`). Validates
+  the whole module shape, not only individual attrs. The emitted
+  module wraps every `ResidentOp` as a `ttnn.generic` with DPS
+  operands, inline-source compute/reader/writer kernels, and
+  `#ttnn.ttnn_layout`-typed tensor args.
 
 To rebuild the in-tree binary from a fresh checkout:
 

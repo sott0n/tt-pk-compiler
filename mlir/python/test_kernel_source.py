@@ -77,12 +77,12 @@ def main() -> None:
            "qkv_proj writer emitted as source_write_kernel")
     _check("private @qwen36_qkv_proj_kernel" not in text,
            "no private declaration for source-backed kernel")
-    _check("private @qwen36_o_proj_kernel()" in text,
-           "ops without source keep private symbol declarations")
-    _check("#ttnn.compute_kernel<symbol_ref = @qwen36_o_proj_kernel" in text,
-           "ops without source still emit symbol_ref compute_kernel")
-    _check(text.count("#ttnn.source_read_kernel<") == 1,
-           "reader_kernel_source only lands on ops that set it")
+    _check("// compute kernel stub" in text,
+           "ops without source body fall back to a stub inline source")
+    _check(text.count("#ttnn.source_read_kernel<") == len(schedule.ops),
+           "every op emits a source_read_kernel (stub if unset)")
+    _check(text.count("#ttnn.source_write_kernel<") == len(schedule.ops),
+           "every op emits a source_write_kernel (stub if unset)")
 
     try:
         ensure_available()
@@ -91,7 +91,7 @@ def main() -> None:
         return
 
     result = lint(text)
-    for attr in ("compute_kernel", "source_compute_kernel",
+    for attr in ("source_compute_kernel",
                  "source_read_kernel", "source_write_kernel"):
         _check(attr in result.attrs_seen,
                f"ttmlir-opt saw ttnn.{attr}")
