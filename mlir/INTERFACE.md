@@ -101,10 +101,14 @@ Fields now filled in:
   and emitted as `#ttnn.source_read_kernel` / `#ttnn.source_write_kernel`
   entries in the same `program.kernels` list as the compute kernel,
   on the same core ranges. Either side can be omitted independently.
+- Multi-dtype CB sizing (CP10): `derive_cbs` looks the per-tile byte
+  count up by `op.dtype` from a table mirroring tt-mlir's
+  `ttcore::getTileSizeBytes`. Dtype spellings are the TTNN parser's
+  own (`f32`, `bf16`, `bfp_bf8`, `bfp_bf4`, `u16`, `si32`, `i1`, ...);
+  the CB's `dtype` field now echoes `op.dtype` directly. An unknown
+  dtype raises `NotImplementedError`.
 
-Fields still NOT filled in (CP10+):
-
-- Multi-dtype CB sizing (bfp8_b, bfp4_b): raises today.
+Fields still NOT filled in (CP11+):
 - Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
 - Coalescing contiguous cores into bigger `CoreRange` attrs; the
   codegen emits one 1x1 range per worker today.
@@ -127,6 +131,10 @@ Fields still NOT filled in (CP10+):
   works (CP9, same test). Fixtures at
   `python/testdata/kernels/qwen36_qkv_proj_reader.cpp` and
   `..._writer.cpp`.
+- Per-dtype CB page sizing → `#ttnn.kernel_cb_format` round-trip across
+  all TTNN DataType spellings: works (CP10, see
+  `test_multi_dtype_cb.py`). `bfp_bf8` and `f32` snippets parse back
+  through the submodule's `ttmlir-opt`.
 
 To rebuild the in-tree binary from a fresh checkout:
 
@@ -138,11 +146,10 @@ This stages a project-local toolchain at `.ttmlir-toolchain/` and
 builds `third_party/tt-mlir/build/bin/ttmlir-opt` with
 `TTMLIR_ENABLE_RUNTIME=OFF`, so no tt-metal link is required.
 
-## Not covered (CP10+)
+## Not covered (CP11+)
 
 - Compiler-generated kernel bodies (CP8/CP9 import external C++; they
   do not synthesize one).
-- CB sizing from `K, N, dtype`.
 - Semaphore graph lowered from async-live-range analysis (D9).
 - Multi-chip / mesh codegen (needs tt-mlir mesh attrs).
 - ttir → tt-pk importer that actually parses MLIR text (needs Python

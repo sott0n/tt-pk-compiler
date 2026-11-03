@@ -15,11 +15,26 @@ from .kernel_source import escape_for_mlir
 from .resident import ResidentOp, ResidentSchedule
 
 
-# bf16 tile bytes used by tt-metal CB page sizing. One face holds 16x16
-# bf16 values at 2 bytes each; a tile is four faces plus a 64-byte
-# header, so the full tile is 2112 bytes. CP7a uses this for every
-# dtype; a per-dtype table lands when the compiler imports more dtypes.
-_BF16_TILE_BYTES = 2112
+# Per-dtype 32x32 tile byte count, mirroring tt-mlir's
+# `ttcore::getTileSizeBytes` (lib/Dialect/TTCore/IR/TTCoreOpsTypes.cpp).
+# Keys are the tt-mlir DataType enum spellings as the TTNN parser accepts
+# them in `#ttnn.kernel_cb_format<dtype = ...>`.
+_TILE_BYTES_BY_DTYPE: Dict[str, int] = {
+    "f32": 4096,
+    "f16": 2048,
+    "bf16": 2048,
+    "bfp_f8": 1088,
+    "bfp_bf8": 1088,
+    "bfp_f4": 576,
+    "bfp_bf4": 576,
+    "bfp_f2": 320,
+    "bfp_bf2": 320,
+    "u32": 4096,
+    "u16": 2048,
+    "u8": 1024,
+    "si32": 4096,
+    "i1": 1024,
+}
 _DOUBLE_BUFFER = 2
 
 
@@ -57,26 +72,28 @@ def derive_cbs(op: ResidentOp) -> Tuple[CBSpec, ...]:
     """One input CB per consumed tensor, one weight CB, one output CB.
 
     Tile count = double_buffer * ceil(K / tile) for inputs/weight and
-    double_buffer * ceil(N / tile) for the output. The compiler is still
-    tile-oblivious outside this helper; raise rather than silently pick
-    a wrong tile size.
+    double_buffer * ceil(N / tile) for the output. The dtype's tile byte
+    count comes from `_TILE_BYTES_BY_DTYPE`; an unknown dtype raises so
+    the compiler never silently emits a wrong page size.
     """
-    if op.dtype != "bf16":
+    page_size = _TILE_BYTES_BY_DTYPE.get(op.dtype)
+    if page_size is None:
         raise NotImplementedError(
-            f"codegen tile sizing only covers bf16; got {op.dtype!r}")
+            f"codegen has no tile byte count for dtype {op.dtype!r}; "
+            f"known: {sorted(_TILE_BYTES_BY_DTYPE)}")
     k_tiles = max(1, (op.k + 31) // 32)
     n_tiles = max(1, (op.n + 31) // 32)
 
     cbs: List[CBSpec] = []
     index = 0
     for _ in op.consumes:
-        cbs.append(CBSpec(index, "bf16", _BF16_TILE_BYTES,
+        cbs.append(CBSpec(index, op.dtype, page_size,
                           _DOUBLE_BUFFER * k_tiles))
         index += 1
-    cbs.append(CBSpec(index, "bf16", _BF16_TILE_BYTES,
+    cbs.append(CBSpec(index, op.dtype, page_size,
                       _DOUBLE_BUFFER * k_tiles))
     index += 1
-    cbs.append(CBSpec(index, "bf16", _BF16_TILE_BYTES,
+    cbs.append(CBSpec(index, op.dtype, page_size,
                       _DOUBLE_BUFFER * n_tiles))
     return tuple(cbs)
 
