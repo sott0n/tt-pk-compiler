@@ -156,9 +156,12 @@ def _emit_data_kernel(mnemonic: str, body: str, cores_text: str) -> str:
             f", rt_args = []>")
 
 
-_COMPUTE_STUB = "// compute kernel stub"
-_READER_STUB = "// reader kernel stub"
-_WRITER_STUB = "// writer kernel stub"
+# The flatbuffer target JIT-links the C++ body into a RISC-V elf whose
+# `_start` references `kernel_main()`. An empty body fails that link,
+# so default to the tt-metal "blank" kernel: a no-op `kernel_main`.
+_COMPUTE_STUB = "void kernel_main() {}"
+_READER_STUB = "void kernel_main() {}"
+_WRITER_STUB = "void kernel_main() {}"
 
 
 def _emit_compute_kernel(op: ResidentOp, cores_text: str,

@@ -77,7 +77,7 @@ def main() -> None:
            "qkv_proj writer emitted as source_write_kernel")
     _check("private @qwen36_qkv_proj_kernel" not in text,
            "no private declaration for source-backed kernel")
-    _check("// compute kernel stub" in text,
+    _check("void kernel_main() {}" in text,
            "ops without source body fall back to a stub inline source")
     _check(text.count("#ttnn.source_read_kernel<") == len(schedule.ops),
            "every op emits a source_read_kernel (stub if unset)")
