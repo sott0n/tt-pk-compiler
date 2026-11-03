@@ -9,7 +9,7 @@ from .builder import CoreSet, Kernel, Program, assemble, verify
 from .materialize import materialize
 from .plan import CandidatePlan, CoreAssignment
 from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
-                      KernelSpec)
+                      KernelEntry, KernelSpec)
 from .codegen import (CBSpec, SemSpec, derive_cbs, derive_semaphores,
                       emit_ttnn_generic)
 from .kernel_source import KernelSourceError, escape_for_mlir, load as load_kernel_source
@@ -22,7 +22,8 @@ from .search import greedy_search
 
 __all__ = [
     "CoreSet", "Kernel", "Program", "assemble", "verify",
-    "AnalysisProblem", "DecoderLayerSpec", "HardwareSpec", "KernelSpec",
+    "AnalysisProblem", "DecoderLayerSpec", "HardwareSpec", "KernelEntry",
+    "KernelSpec",
     "CandidatePlan", "CoreAssignment",
     "greedy_search", "materialize",
     "ResidentOp", "ResidentSchedule", "lower_to_resident",

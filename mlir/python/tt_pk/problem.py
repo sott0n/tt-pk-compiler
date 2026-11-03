@@ -27,6 +27,23 @@ class ComputeKernelConfig:
 
 
 @dataclass(frozen=True)
+class KernelEntry:
+    """One kernel slot inside a Resident-style multi-kernel program.
+
+    A ttnn.generic op can carry several reader / writer / compute kernels
+    on different core ranges; tt-qwen-resident's attention is 7 of them.
+    `cores` is per-entry so leader and worker roles land on their own
+    grids; `compute_config` is only meaningful on compute entries.
+    """
+    role: str
+    source: str
+    cores: Tuple[Tuple[int, int], ...]
+    compute_config: Optional[ComputeKernelConfig] = None
+    ct_args: Tuple[int, ...] = ()
+    common_rt_args: Tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class KernelSpec:
     name: str
     k: int
@@ -51,6 +68,11 @@ class KernelSpec:
     # the compute kernel.
     reader_kernel_source: Optional[str] = None
     writer_kernel_source: Optional[str] = None
+    # Multi-kernel programs (e.g. tt-qwen-resident attention: 7 kernels
+    # across leader + worker grids). When set, codegen ignores the single
+    # compute / reader / writer slots above and emits one program.kernels
+    # entry per KernelEntry here.
+    kernels: Tuple[KernelEntry, ...] = ()
 
     def effective_cost(self) -> int:
         return self.cost if self.cost > 0 else max(1, self.k * self.n)

@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
 from .kernel_source import escape_for_mlir
+from .problem import KernelEntry
 from .resident import ResidentOp, ResidentSchedule
 
 
@@ -148,6 +149,9 @@ def _emit_sem(sem: SemSpec, cores_text: str) -> str:
 
 
 def _emit_data_kernel(mnemonic: str, body: str, cores_text: str) -> str:
+    # KernelEntry.ct_args / common_rt_args hold tt-metal-style integer args;
+    # the TTNN attr's ct_args/common_rt_args are a different, typed list
+    # (`#ttnn.kernel_arg_*`). Mapping between the two is M1d work.
     src_lit = f"\"{escape_for_mlir(body)}\""
     return (f"#ttnn.{mnemonic}<source = {src_lit}"
             f", core_ranges = {cores_text}"
@@ -164,16 +168,13 @@ _READER_STUB = "void kernel_main() {}"
 _WRITER_STUB = "void kernel_main() {}"
 
 
-def _emit_compute_kernel(op: ResidentOp, cores_text: str,
-                         cb_count: int) -> str:
+def _emit_compute_source(body: str, cores_text: str,
+                         cfg, cb_count: int) -> str:
     # Each CB needs an UnpackToDestMode entry; the enum is non-optional
     # in the TD. The flatbuffer target refuses the symbol_ref form unless
-    # a matching ttkernel.func lives in the module, so default to a stub
-    # inline source when the KernelSpec carries none. The agent swaps it.
+    # a matching ttkernel.func lives in the module.
     unpack_modes = ", ".join(["default"] * cb_count)
-    cfg = op.compute_config
-    body_src = op.compute_kernel_source or _COMPUTE_STUB
-    src_lit = f"\"{escape_for_mlir(body_src)}\""
+    src_lit = f"\"{escape_for_mlir(body)}\""
     return (
         f"#ttnn.source_compute_kernel<source = {src_lit}"
         f", core_ranges = {cores_text}"
@@ -187,6 +188,28 @@ def _emit_compute_kernel(op: ResidentOp, cores_text: str,
         f", common_rt_args = []"
         f", rt_args = []>"
     )
+
+
+def _emit_compute_kernel(op: ResidentOp, cores_text: str,
+                         cb_count: int) -> str:
+    body = op.compute_kernel_source or _COMPUTE_STUB
+    return _emit_compute_source(body, cores_text, op.compute_config, cb_count)
+
+
+def _emit_entry(entry: KernelEntry, cb_count: int,
+                default_cfg) -> str:
+    cores_text = _emit_core_ranges(entry.cores)
+    if entry.role == "compute":
+        cfg = entry.compute_config or default_cfg
+        return _emit_compute_source(entry.source, cores_text, cfg, cb_count)
+    if entry.role == "reader":
+        return _emit_data_kernel("source_read_kernel", entry.source,
+                                 cores_text)
+    if entry.role == "writer":
+        return _emit_data_kernel("source_write_kernel", entry.source,
+                                 cores_text)
+    raise ValueError(f"unknown KernelEntry.role {entry.role!r}; "
+                     f"expected compute | reader | writer")
 
 
 def _mlir_elt(dtype: str) -> str:
@@ -252,13 +275,19 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
         cores_text = _emit_core_ranges(op.cores)
         cbs = derive_cbs(op)
         cb_text = ", ".join(_emit_cb(cb, cores_text) for cb in cbs)
-        kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
-        reader_src = op.reader_kernel_source or _READER_STUB
-        writer_src = op.writer_kernel_source or _WRITER_STUB
-        kernels_text.append(_emit_data_kernel(
-            "source_read_kernel", reader_src, cores_text))
-        kernels_text.append(_emit_data_kernel(
-            "source_write_kernel", writer_src, cores_text))
+        if op.kernels:
+            # Multi-kernel program (e.g. attention 7 kernels across leader
+            # and worker grids). Each entry carries its own cores + source.
+            kernels_text = [_emit_entry(e, len(cbs), op.compute_config)
+                            for e in op.kernels]
+        else:
+            kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
+            reader_src = op.reader_kernel_source or _READER_STUB
+            writer_src = op.writer_kernel_source or _WRITER_STUB
+            kernels_text.append(_emit_data_kernel(
+                "source_read_kernel", reader_src, cores_text))
+            kernels_text.append(_emit_data_kernel(
+                "source_write_kernel", writer_src, cores_text))
         kernel_decl = ", ".join(kernels_text)
 
         operands = list(op.consumes) + [op.produces]
