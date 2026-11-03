@@ -26,6 +26,7 @@ class ResidentOp:
     n: int
     dtype: str
     compute_config: ComputeKernelConfig
+    compute_kernel_source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,7 @@ def lower_to_resident(problem: AnalysisProblem,
             n=spec.n,
             dtype=spec.dtype,
             compute_config=cfg,
+            compute_kernel_source=spec.compute_kernel_source,
         ))
     return ResidentSchedule(
         model_name=problem.model_name,

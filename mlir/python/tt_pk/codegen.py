@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+from .kernel_source import escape_for_mlir
 from .resident import ResidentOp, ResidentSchedule
 
 
@@ -130,6 +131,45 @@ def _emit_sem(sem: SemSpec, cores_text: str) -> str:
             f"initial_value = {sem.initial_value}>")
 
 
+def _emit_compute_kernel(op: ResidentOp, cores_text: str,
+                         cb_count: int) -> str:
+    # Each CB needs an UnpackToDestMode entry; the enum is non-optional
+    # in the TD. "default" means "do not force fp32" and matches the
+    # policy fields; a bf16-first-class entry can land when the IR
+    # starts tracking per-CB precision overrides.
+    unpack_modes = ", ".join(["default"] * cb_count)
+    cfg = op.compute_config
+    body_src = op.compute_kernel_source
+    if body_src is not None:
+        src_lit = f"\"{escape_for_mlir(body_src)}\""
+        return (
+            f"#ttnn.source_compute_kernel<source = {src_lit}"
+            f", core_ranges = {cores_text}"
+            f", math_fidelity = {cfg.math_fidelity}"
+            f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
+            f", dst_full_sync_en = {str(cfg.dst_full_sync_en).lower()}"
+            f", unpack_to_dest_modes = [{unpack_modes}]"
+            f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
+            f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
+            f", ct_args = []"
+            f", common_rt_args = []"
+            f", rt_args = []>"
+        )
+    return (
+        f"#ttnn.compute_kernel<symbol_ref = {_kernel_sym(op.kernel_name)}"
+        f", core_ranges = {cores_text}"
+        f", math_fidelity = {cfg.math_fidelity}"
+        f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
+        f", dst_full_sync_en = {str(cfg.dst_full_sync_en).lower()}"
+        f", unpack_to_dest_modes = [{unpack_modes}]"
+        f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
+        f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
+        f", ct_args = []"
+        f", common_rt_args = []"
+        f", rt_args = []>"
+    )
+
+
 def _per_op_sem_waits(schedule: ResidentSchedule,
                       sems: Tuple[SemSpec, ...]
                       ) -> Dict[str, Tuple[Tuple[int, ...], Tuple[int, ...]]]:
@@ -148,7 +188,8 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
 
     lines = ["module {"]
     for op in schedule.ops:
-        lines.append(f"  func.func private {_kernel_sym(op.kernel_name)}()")
+        if op.compute_kernel_source is None:
+            lines.append(f"  func.func private {_kernel_sym(op.kernel_name)}()")
     lines.append("")
     lines.append("  func.func @decoder_layer() {")
     for op in schedule.ops:
@@ -161,25 +202,7 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
         sem_text = ", ".join(_emit_sem(s, cores_text) for s in op_sems)
         waits, signals = sem_table[op.kernel_name]
         operands = ", ".join(f"%{c}" for c in op.consumes) or "/* none */"
-        # Each CB needs an UnpackToDestMode entry; the enum is non-optional
-        # in the TD. "default" means "do not force fp32" and matches the
-        # policy fields; a bf16-first-class entry can land when the IR
-        # starts tracking per-CB precision overrides.
-        unpack_modes = ", ".join(["default"] * len(cbs))
-        cfg = op.compute_config
-        kernel_decl = (
-            f"#ttnn.compute_kernel<symbol_ref = {_kernel_sym(op.kernel_name)}"
-            f", core_ranges = {cores_text}"
-            f", math_fidelity = {cfg.math_fidelity}"
-            f", fp32_dest_acc_en = {str(cfg.fp32_dest_acc_en).lower()}"
-            f", dst_full_sync_en = {str(cfg.dst_full_sync_en).lower()}"
-            f", unpack_to_dest_modes = [{unpack_modes}]"
-            f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
-            f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
-            f", ct_args = []"
-            f", common_rt_args = []"
-            f", rt_args = []>"
-        )
+        kernel_decl = _emit_compute_kernel(op, cores_text, len(cbs))
         lines.append(
             f"    %{op.produces} = ttnn.generic {{"
             f" program = #ttnn.program<kernels = [{kernel_decl}], "

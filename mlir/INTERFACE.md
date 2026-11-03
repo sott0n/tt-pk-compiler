@@ -89,11 +89,15 @@ Fields now filled in:
   `math_approx_mode` come from `KernelSpec.compute_config`, falling
   back to `HardwareSpec.default_compute_config`. The codegen never
   invents these; a kernel without either errors in `lower_to_resident`.
+- Compute-kernel C++ body (CP8): `KernelSpec.compute_kernel_source`
+  (raw text, or a path read by `tt_pk.load_kernel_source`) is carried
+  through `ResidentOp` to the codegen. When present, codegen emits
+  `#ttnn.source_compute_kernel<source = "...">` with the body MLIR-
+  escaped and drops the private function declaration. Without a body
+  the kernel stays on `#ttnn.compute_kernel<symbol_ref = @...>`.
 
-Fields still NOT filled in (CP8+):
+Fields still NOT filled in (CP9+):
 
-- Kernel body function content: emitted as a private declaration with
-  no body; a Resident runtime kernel-source importer lives in CP8.
 - Multi-dtype CB sizing (bfp8_b, bfp4_b): raises today.
 - Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
 - Coalescing contiguous cores into bigger `CoreRange` attrs; the
@@ -108,6 +112,10 @@ Fields still NOT filled in (CP8+):
 - Emitted ttnn text → in-tree `ttmlir-opt` round-trip: works (CP7b, see
   `tt_pk.ttnn_lint`). Each emitted attribute is parsed back through
   the submodule's own `ttmlir-opt` binary.
+- Compute-kernel C++ body import → `#ttnn.source_compute_kernel`
+  round-trip: works (CP8, see `test_kernel_source.py`). The fixture
+  at `python/testdata/kernels/qwen36_qkv_proj.cpp` is the in-tree
+  reference body.
 
 To rebuild the in-tree binary from a fresh checkout:
 
@@ -119,9 +127,13 @@ This stages a project-local toolchain at `.ttmlir-toolchain/` and
 builds `third_party/tt-mlir/build/bin/ttmlir-opt` with
 `TTMLIR_ENABLE_RUNTIME=OFF`, so no tt-metal link is required.
 
-## Not covered (CP7+)
+## Not covered (CP9+)
 
-- Real kernel body generation (needs Resident kernel source import).
+- Reader/writer kernel source (`#ttnn.source_read_kernel` and
+  `#ttnn.source_write_kernel` are available in the pinned tt-mlir, but
+  the compiler emits only the compute slot today).
+- Compiler-generated kernel bodies (CP8 imports external C++; it does
+  not synthesize one).
 - CB sizing from `K, N, dtype`.
 - Semaphore graph lowered from async-live-range analysis (D9).
 - Multi-chip / mesh codegen (needs tt-mlir mesh attrs).

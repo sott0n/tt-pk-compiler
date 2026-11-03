@@ -12,6 +12,7 @@ from .problem import (AnalysisProblem, DecoderLayerSpec, HardwareSpec,
                       KernelSpec)
 from .codegen import (CBSpec, SemSpec, derive_cbs, derive_semaphores,
                       emit_ttnn_generic)
+from .kernel_source import KernelSourceError, escape_for_mlir, load as load_kernel_source
 from .ttnn_lint import LintResult, TTNNLintError, ensure_available, lint
 from .importer import (ImporterError, TTIR_WHITELIST, TTIRProvenance,
                        qwen36_provenance, validate_provenance)
@@ -31,4 +32,5 @@ __all__ = [
     "emit_ttnn_generic", "CBSpec", "SemSpec",
     "derive_cbs", "derive_semaphores",
     "LintResult", "TTNNLintError", "ensure_available", "lint",
+    "KernelSourceError", "escape_for_mlir", "load_kernel_source",
 ]

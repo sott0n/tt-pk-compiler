@@ -30,6 +30,7 @@ _EMITTED_ATTRS: Tuple[str, ...] = (
     "kernel_cb_format",
     "kernel_semaphore",
     "compute_kernel",
+    "source_compute_kernel",
 )
 
 
