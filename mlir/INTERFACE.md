@@ -95,8 +95,14 @@ Fields now filled in:
   `#ttnn.source_compute_kernel<source = "...">` with the body MLIR-
   escaped and drops the private function declaration. Without a body
   the kernel stays on `#ttnn.compute_kernel<symbol_ref = @...>`.
+- Reader/writer kernel C++ bodies (CP9):
+  `KernelSpec.reader_kernel_source` and
+  `KernelSpec.writer_kernel_source` are carried through `ResidentOp`
+  and emitted as `#ttnn.source_read_kernel` / `#ttnn.source_write_kernel`
+  entries in the same `program.kernels` list as the compute kernel,
+  on the same core ranges. Either side can be omitted independently.
 
-Fields still NOT filled in (CP9+):
+Fields still NOT filled in (CP10+):
 
 - Multi-dtype CB sizing (bfp8_b, bfp4_b): raises today.
 - Layer-boundary semaphores for `x_norm` / `x_norm2` (host-fed).
@@ -116,6 +122,11 @@ Fields still NOT filled in (CP9+):
   round-trip: works (CP8, see `test_kernel_source.py`). The fixture
   at `python/testdata/kernels/qwen36_qkv_proj.cpp` is the in-tree
   reference body.
+- Reader/writer kernel C++ body import →
+  `#ttnn.source_read_kernel` / `#ttnn.source_write_kernel` round-trip:
+  works (CP9, same test). Fixtures at
+  `python/testdata/kernels/qwen36_qkv_proj_reader.cpp` and
+  `..._writer.cpp`.
 
 To rebuild the in-tree binary from a fresh checkout:
 
@@ -127,13 +138,10 @@ This stages a project-local toolchain at `.ttmlir-toolchain/` and
 builds `third_party/tt-mlir/build/bin/ttmlir-opt` with
 `TTMLIR_ENABLE_RUNTIME=OFF`, so no tt-metal link is required.
 
-## Not covered (CP9+)
+## Not covered (CP10+)
 
-- Reader/writer kernel source (`#ttnn.source_read_kernel` and
-  `#ttnn.source_write_kernel` are available in the pinned tt-mlir, but
-  the compiler emits only the compute slot today).
-- Compiler-generated kernel bodies (CP8 imports external C++; it does
-  not synthesize one).
+- Compiler-generated kernel bodies (CP8/CP9 import external C++; they
+  do not synthesize one).
 - CB sizing from `K, N, dtype`.
 - Semaphore graph lowered from async-live-range analysis (D9).
 - Multi-chip / mesh codegen (needs tt-mlir mesh attrs).

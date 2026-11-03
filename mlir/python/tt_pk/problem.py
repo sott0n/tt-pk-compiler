@@ -45,6 +45,12 @@ class KernelSpec:
     # declaration. When None, codegen falls back to `#ttnn.compute_kernel`
     # with a symbol_ref to a private declaration.
     compute_kernel_source: Optional[str] = None
+    # Optional reader/writer C++ bodies. Each one, when set, adds a
+    # `#ttnn.source_read_kernel` or `#ttnn.source_write_kernel` entry to
+    # the generic op's program.kernels list on the same core ranges as
+    # the compute kernel.
+    reader_kernel_source: Optional[str] = None
+    writer_kernel_source: Optional[str] = None
 
     def effective_cost(self) -> int:
         return self.cost if self.cost > 0 else max(1, self.k * self.n)

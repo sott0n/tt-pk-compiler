@@ -31,6 +31,8 @@ _EMITTED_ATTRS: Tuple[str, ...] = (
     "kernel_semaphore",
     "compute_kernel",
     "source_compute_kernel",
+    "source_read_kernel",
+    "source_write_kernel",
 )
 
 
@@ -52,16 +54,32 @@ def ensure_available() -> None:
 
 
 def _balanced_slice(text: str, start: int) -> int:
+    """Return the index of the matching `>` for the `<` at `start`.
+
+    Skips over MLIR string literals so `<`/`>` characters inside a
+    source body (templates, comparisons) do not throw off the depth
+    count. Backslash escapes inside the string are honored.
+    """
     depth = 0
     i = start
+    in_str = False
     while i < len(text):
         c = text[i]
-        if c == "<":
-            depth += 1
-        elif c == ">":
-            depth -= 1
-            if depth == 0:
-                return i
+        if in_str:
+            if c == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if c == "\"":
+                in_str = False
+        else:
+            if c == "\"":
+                in_str = True
+            elif c == "<":
+                depth += 1
+            elif c == ">":
+                depth -= 1
+                if depth == 0:
+                    return i
         i += 1
     return -1
 

@@ -131,6 +131,15 @@ def _emit_sem(sem: SemSpec, cores_text: str) -> str:
             f"initial_value = {sem.initial_value}>")
 
 
+def _emit_data_kernel(mnemonic: str, body: str, cores_text: str) -> str:
+    src_lit = f"\"{escape_for_mlir(body)}\""
+    return (f"#ttnn.{mnemonic}<source = {src_lit}"
+            f", core_ranges = {cores_text}"
+            f", ct_args = []"
+            f", common_rt_args = []"
+            f", rt_args = []>")
+
+
 def _emit_compute_kernel(op: ResidentOp, cores_text: str,
                          cb_count: int) -> str:
     # Each CB needs an UnpackToDestMode entry; the enum is non-optional
@@ -202,7 +211,14 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
         sem_text = ", ".join(_emit_sem(s, cores_text) for s in op_sems)
         waits, signals = sem_table[op.kernel_name]
         operands = ", ".join(f"%{c}" for c in op.consumes) or "/* none */"
-        kernel_decl = _emit_compute_kernel(op, cores_text, len(cbs))
+        kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
+        if op.reader_kernel_source is not None:
+            kernels_text.append(_emit_data_kernel(
+                "source_read_kernel", op.reader_kernel_source, cores_text))
+        if op.writer_kernel_source is not None:
+            kernels_text.append(_emit_data_kernel(
+                "source_write_kernel", op.writer_kernel_source, cores_text))
+        kernel_decl = ", ".join(kernels_text)
         lines.append(
             f"    %{op.produces} = ttnn.generic {{"
             f" program = #ttnn.program<kernels = [{kernel_decl}], "

@@ -21,6 +21,10 @@ from tt_pk.qwen36 import bh_p150_hardware, qwen36_27b_problem
 
 
 _FIXTURE = os.path.join(HERE, "testdata", "kernels", "qwen36_qkv_proj.cpp")
+_READER_FIXTURE = os.path.join(HERE, "testdata", "kernels",
+                               "qwen36_qkv_proj_reader.cpp")
+_WRITER_FIXTURE = os.path.join(HERE, "testdata", "kernels",
+                               "qwen36_qkv_proj_writer.cpp")
 
 
 def _check(cond: bool, label: str) -> None:
@@ -30,7 +34,8 @@ def _check(cond: bool, label: str) -> None:
         raise SystemExit(1)
 
 
-def _attach_source(problem: AnalysisProblem, name: str, body: str
+def _attach_source(problem: AnalysisProblem, name: str, body: str,
+                   reader: str = None, writer: str = None,
                    ) -> AnalysisProblem:
     kernels = []
     for k in problem.layer.kernels:
@@ -39,7 +44,9 @@ def _attach_source(problem: AnalysisProblem, name: str, body: str
                 name=k.name, k=k.k, n=k.n, produces=k.produces,
                 consumes=k.consumes, dtype=k.dtype, cost=k.cost,
                 compute_config=k.compute_config,
-                compute_kernel_source=body))
+                compute_kernel_source=body,
+                reader_kernel_source=reader,
+                writer_kernel_source=writer))
         else:
             kernels.append(k)
     return AnalysisProblem(
@@ -55,18 +62,27 @@ def main() -> None:
     _check(escape_for_mlir('say "hi"\n') == 'say \\"hi\\"\\n',
            "escape_for_mlir handles quotes and newline")
 
-    problem = _attach_source(qwen36_27b_problem(), "qwen36.qkv_proj", body)
+    reader_body = load_kernel_source(_READER_FIXTURE)
+    writer_body = load_kernel_source(_WRITER_FIXTURE)
+    problem = _attach_source(qwen36_27b_problem(), "qwen36.qkv_proj", body,
+                             reader=reader_body, writer=writer_body)
     schedule = lower_to_resident(problem, greedy_search(problem))
     text = emit_ttnn_generic(schedule)
 
     _check("#ttnn.source_compute_kernel<" in text,
            "qkv_proj kernel emitted as source_compute_kernel")
+    _check("#ttnn.source_read_kernel<" in text,
+           "qkv_proj reader emitted as source_read_kernel")
+    _check("#ttnn.source_write_kernel<" in text,
+           "qkv_proj writer emitted as source_write_kernel")
     _check("private @qwen36_qkv_proj_kernel" not in text,
            "no private declaration for source-backed kernel")
     _check("private @qwen36_o_proj_kernel()" in text,
            "ops without source keep private symbol declarations")
     _check("#ttnn.compute_kernel<symbol_ref = @qwen36_o_proj_kernel" in text,
            "ops without source still emit symbol_ref compute_kernel")
+    _check(text.count("#ttnn.source_read_kernel<") == 1,
+           "reader_kernel_source only lands on ops that set it")
 
     try:
         ensure_available()
@@ -75,10 +91,10 @@ def main() -> None:
         return
 
     result = lint(text)
-    _check("source_compute_kernel" in result.attrs_seen,
-           "ttmlir-opt saw source_compute_kernel")
-    _check("compute_kernel" in result.attrs_seen,
-           "ttmlir-opt saw compute_kernel on no-source ops")
+    for attr in ("compute_kernel", "source_compute_kernel",
+                 "source_read_kernel", "source_write_kernel"):
+        _check(attr in result.attrs_seen,
+               f"ttmlir-opt saw ttnn.{attr}")
     _check(result.attrs_rejected == (),
            f"ttmlir-opt accepted every emitted attr "
            f"(rejected: {result.attrs_rejected})")
