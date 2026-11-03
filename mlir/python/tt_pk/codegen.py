@@ -148,15 +148,26 @@ def _emit_sem(sem: SemSpec, cores_text: str) -> str:
             f"initial_value = {sem.initial_value}>")
 
 
-def _emit_data_kernel(mnemonic: str, body: str, cores_text: str) -> str:
-    # KernelEntry.ct_args / common_rt_args hold tt-metal-style integer args;
-    # the TTNN attr's ct_args/common_rt_args are a different, typed list
-    # (`#ttnn.kernel_arg_*`). Mapping between the two is M1d work.
+def _emit_named_args(values: Tuple[int, ...], prefix: str) -> str:
+    # tt-metal kernels call get_compile_time_arg_val(N) by index, so the
+    # name is cosmetic; the runtime pushes `value` straight onto the
+    # KernelDescriptor's ct_args vector.
+    if not values:
+        return "[]"
+    parts = ", ".join(
+        f"#ttnn.kernel_named_arg<name = \"{prefix}{i}\", value = {int(v)}>"
+        for i, v in enumerate(values))
+    return f"[{parts}]"
+
+
+def _emit_data_kernel(mnemonic: str, body: str, cores_text: str,
+                      ct_args: Tuple[int, ...] = (),
+                      common_rt_args: Tuple[int, ...] = ()) -> str:
     src_lit = f"\"{escape_for_mlir(body)}\""
     return (f"#ttnn.{mnemonic}<source = {src_lit}"
             f", core_ranges = {cores_text}"
-            f", ct_args = []"
-            f", common_rt_args = []"
+            f", ct_args = {_emit_named_args(ct_args, 'ct_arg_')}"
+            f", common_rt_args = {_emit_named_args(common_rt_args, 'rt_arg_')}"
             f", rt_args = []>")
 
 
@@ -169,7 +180,9 @@ _WRITER_STUB = "void kernel_main() {}"
 
 
 def _emit_compute_source(body: str, cores_text: str,
-                         cfg, cb_count: int) -> str:
+                         cfg, cb_count: int,
+                         ct_args: Tuple[int, ...] = (),
+                         common_rt_args: Tuple[int, ...] = ()) -> str:
     # Each CB needs an UnpackToDestMode entry; the enum is non-optional
     # in the TD. The flatbuffer target refuses the symbol_ref form unless
     # a matching ttkernel.func lives in the module.
@@ -184,8 +197,8 @@ def _emit_compute_source(body: str, cores_text: str,
         f", unpack_to_dest_modes = [{unpack_modes}]"
         f", bfp8_pack_precise = {str(cfg.bfp8_pack_precise).lower()}"
         f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
-        f", ct_args = []"
-        f", common_rt_args = []"
+        f", ct_args = {_emit_named_args(ct_args, 'ct_arg_')}"
+        f", common_rt_args = {_emit_named_args(common_rt_args, 'rt_arg_')}"
         f", rt_args = []>"
     )
 
@@ -201,13 +214,16 @@ def _emit_entry(entry: KernelEntry, cb_count: int,
     cores_text = _emit_core_ranges(entry.cores)
     if entry.role == "compute":
         cfg = entry.compute_config or default_cfg
-        return _emit_compute_source(entry.source, cores_text, cfg, cb_count)
+        return _emit_compute_source(entry.source, cores_text, cfg, cb_count,
+                                    entry.ct_args, entry.common_rt_args)
     if entry.role == "reader":
         return _emit_data_kernel("source_read_kernel", entry.source,
-                                 cores_text)
+                                 cores_text, entry.ct_args,
+                                 entry.common_rt_args)
     if entry.role == "writer":
         return _emit_data_kernel("source_write_kernel", entry.source,
-                                 cores_text)
+                                 cores_text, entry.ct_args,
+                                 entry.common_rt_args)
     raise ValueError(f"unknown KernelEntry.role {entry.role!r}; "
                      f"expected compute | reader | writer")
 

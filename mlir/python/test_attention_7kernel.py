@@ -84,17 +84,47 @@ def main():
     chunk = ((4, 4),)
     tail = ((4, 5),)
 
+    # 21 compile-time args attn_common.hpp:54-74 expects. Indices match
+    # tt-qwen-resident model.py:1030-1045; values are a toy 1-chip BH
+    # config so get_compile_time_arg_val(N) sees valid bits at JIT time
+    # and the kernels compile. Numerical correctness is a separate step.
+    import struct
+    eps_bits = struct.unpack("<I", struct.pack("<f", 1e-5))[0]
+    attn_ct = (
+        1,          # 0 layers (n_attn)
+        1,          # 1 copies (attn_copies)
+        4,          # 2 workers
+        1,          # 3 num_streamers (S)
+        4,          # 4 chunk_max (kv_block)
+        4,          # 5 heads (heads_a)
+        4,          # 6 Dt (head_dim / 32)
+        2,          # 7 rot_tiles (ROT / TILE)
+        0, 1, 2, 3, # 8-11 sem_rows / sem_q / sem_m / sem_M
+        4, 5,       # 12-13 sem_part / sem_heads
+        eps_bits,   # 14 eps bits
+        6,          # 15 sem_addr
+        1,          # 16 fanin (slots_per_node)
+        1,          # 17 banks
+        7,          # 18 sem_tail (SEM_LOCAL)
+        2,          # 19 batch (verify=1 forces 2)
+        0,          # 20 verify
+    )
+
     entries = (
-        KernelEntry("reader", _kernel_source("attn_worker_reader.cpp"), work),
-        KernelEntry("writer", _kernel_source("attn_worker_writer.cpp"), work),
+        KernelEntry("reader", _kernel_source("attn_worker_reader.cpp"), work,
+                    ct_args=attn_ct),
+        KernelEntry("writer", _kernel_source("attn_worker_writer.cpp"), work,
+                    ct_args=attn_ct),
         KernelEntry("compute", _kernel_source("attn_worker_compute.cpp"),
-                    chunk, compute_config=hifi2),
+                    chunk, compute_config=hifi2, ct_args=attn_ct),
         KernelEntry("compute", _kernel_source("attn_worker_compute.cpp"),
-                    tail, compute_config=hifi4),
-        KernelEntry("reader", _kernel_source("attn_leader_reader.cpp"), lead),
-        KernelEntry("writer", _kernel_source("attn_leader_writer.cpp"), lead),
+                    tail, compute_config=hifi4, ct_args=attn_ct),
+        KernelEntry("reader", _kernel_source("attn_leader_reader.cpp"), lead,
+                    ct_args=attn_ct),
+        KernelEntry("writer", _kernel_source("attn_leader_writer.cpp"), lead,
+                    ct_args=attn_ct),
         KernelEntry("compute", _kernel_source("attn_leader_compute.cpp"),
-                    lead, compute_config=hifi4),
+                    lead, compute_config=hifi4, ct_args=attn_ct),
     )
     _check(len(entries) == 7, "7 KernelEntry built from real cpp files")
 
@@ -114,17 +144,27 @@ def main():
     _check(text.count("source_write_kernel") == 2,
            "2 writer kernels emitted")
 
-    with tempfile.TemporaryDirectory() as tmp:
-        mlir = os.path.join(tmp, "attn.mlir")
-        reg = os.path.join(tmp, "attn_reg.mlir")
-        fb = os.path.join(tmp, "attn.ttnn")
-        with open(mlir, "w") as f:
-            f.write(text)
-        _run([_OPT, "--ttcore-register-device", mlir, "-o", reg])
-        _check(os.path.getsize(reg) > 0, "ttmlir-opt accepts the module")
-        _run([_XLATE, "--ttnn-to-flatbuffer", reg, "-o", fb])
-        size = os.path.getsize(fb)
-        _check(size > 0, f"flatbuffer emitted ({size} B)")
+    out_dir = os.environ.get("ATTN_OUT_DIR")
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        mlir = os.path.join(out_dir, "attn.mlir")
+        reg = os.path.join(out_dir, "attn_reg.mlir")
+        fb = os.path.join(out_dir, "attn.ttnn")
+    else:
+        tmp_ctx = tempfile.TemporaryDirectory()
+        mlir = os.path.join(tmp_ctx.name, "attn.mlir")
+        reg = os.path.join(tmp_ctx.name, "attn_reg.mlir")
+        fb = os.path.join(tmp_ctx.name, "attn.ttnn")
+
+    with open(mlir, "w") as f:
+        f.write(text)
+    _run([_OPT, "--ttcore-register-device", mlir, "-o", reg])
+    _check(os.path.getsize(reg) > 0, "ttmlir-opt accepts the module")
+    _run([_XLATE, "--ttnn-to-flatbuffer", reg, "-o", fb])
+    size = os.path.getsize(fb)
+    _check(size > 0, f"flatbuffer emitted ({size} B)")
+    if out_dir:
+        print(f"saved: {fb}")
 
     print("OK")
 
