@@ -14,6 +14,7 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+from tt_pk.codegen_types import CBSpec, SemSpec
 from tt_pk.problem import ComputeKernelConfig, KernelEntry
 from tt_pk.resident import ResidentOp, ResidentSchedule
 from tt_pk.codegen import emit_ttnn_generic
@@ -91,7 +92,7 @@ def main():
     import struct
     eps_bits = struct.unpack("<I", struct.pack("<f", 1e-5))[0]
     attn_ct = (
-        1,          # 0 layers (n_attn)
+        int(os.environ.get("ATTN_LAYERS", "1")),  # 0 layers (n_attn)
         1,          # 1 copies (attn_copies)
         4,          # 2 workers
         1,          # 3 num_streamers (S)
@@ -128,12 +129,33 @@ def main():
     )
     _check(len(entries) == 7, "7 KernelEntry built from real cpp files")
 
+    # 8 semaphores the attn kernels reference by ID (SEM_ROWS=0,
+    # SEM_Q=1, SEM_m=2, SEM_M=3, SEM_PART=4, SEM_HEADS=5, SEM_ADDR=6,
+    # SEM_LOCAL=7). All on the union of all cores so every kernel can
+    # `get_semaphore(id)`. Initial value 0 matches tt-qwen-resident.
+    union_cores = lead + work + chunk + tail
+    sems = tuple(SemSpec(id=i, initial_value=0, cores=union_cores)
+                 for i in range(8))
+
+    # Minimal CB map. Buffer indices the attn kernels touch (seen in
+    # attn_common.hpp:89-120). Sizes are small placeholders — enough to
+    # satisfy `cb_reserve_back` at launch; numerical correctness comes
+    # later when CBs are sized from the real head / kv-block shapes.
+    _BF16 = 2048
+    used_cb_indices = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13,
+                       14, 15, 16, 17, 18, 24, 26, 31)
+    cbs = tuple(CBSpec(buffer_index=i, dtype="bf16",
+                       page_size=_BF16, tile_count=1,
+                       cores=union_cores)
+                for i in used_cb_indices)
+
     op = ResidentOp(
         kernel_name="qwen36.attention",
-        cores=lead + work + chunk + tail,
+        cores=union_cores,
         consumes=("x",), produces="y",
         k=128, n=128, dtype="bf16",
-        compute_config=hifi4, kernels=entries)
+        compute_config=hifi4, kernels=entries,
+        semaphores=sems, cbs=cbs)
     text = emit_ttnn_generic(ResidentSchedule(
         model_name="attn_m1b", hardware="bh_p150", ops=(op,)))
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+from .codegen_types import CBSpec, SemSpec
 from .kernel_source import escape_for_mlir
 from .problem import KernelEntry
 from .resident import ResidentOp, ResidentSchedule
@@ -39,25 +40,6 @@ _TILE_BYTES_BY_DTYPE: Dict[str, int] = {
 _DOUBLE_BUFFER = 2
 
 
-@dataclass(frozen=True)
-class CBSpec:
-    """One CB that lives on a kernel's cores."""
-    buffer_index: int
-    dtype: str
-    page_size: int
-    tile_count: int
-
-    def total_size(self) -> int:
-        return self.tile_count * self.page_size
-
-
-@dataclass(frozen=True)
-class SemSpec:
-    """One semaphore between a producer kernel and a consumer kernel."""
-    id: int
-    producer: str
-    consumer: str
-    initial_value: int = 0
 
 
 @dataclass(frozen=True)
@@ -241,18 +223,27 @@ def _tile_grid(k: int, n: int) -> Tuple[int, int]:
 def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
     tensor_shape: Dict[str, Tuple[int, int]] = {}
     tensor_dtype: Dict[str, str] = {}
-    arg_order: List[str] = []
-    seen: set = set()
+    # Inputs are tensors consumed by some op but produced by none; they
+    # arrive as function arguments. Outputs are produced by an op and
+    # allocated inside the function via ttnn.empty, matching the TTNN
+    # standard-flow test examples (see
+    # test/ttmlir/Dialect/TTNN/generic/generic_scalar_arg_flatbuffer.mlir).
+    produced: set = set()
     for op in schedule.ops:
+        produced.add(op.produces)
         for name in op.consumes:
             tensor_shape.setdefault(name, (op.k, op.n))
             tensor_dtype.setdefault(name, op.dtype)
-            if name not in seen:
-                arg_order.append(name); seen.add(name)
         tensor_shape[op.produces] = (op.k, op.n)
         tensor_dtype[op.produces] = op.dtype
-        if op.produces not in seen:
-            arg_order.append(op.produces); seen.add(op.produces)
+
+    input_order: List[str] = []
+    seen: set = set()
+    for op in schedule.ops:
+        for name in op.consumes:
+            if name in produced or name in seen:
+                continue
+            input_order.append(name); seen.add(name)
 
     layouts: Dict[Tuple[int, int, str], str] = {}
 
@@ -265,7 +256,7 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
         return layouts[key], elt, k, n
 
     arg_type: Dict[str, str] = {}
-    for name in arg_order:
+    for name in list(input_order) + list(produced):
         alias, elt, k, n = layout_for(name)
         arg_type[name] = f"tensor<{k}x{n}x{elt}, {alias}>"
 
@@ -280,17 +271,43 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
     lines.append("")
     lines.append("module {")
 
-    args_text = ", ".join(f"%{n}: {arg_type[n]}" for n in arg_order)
+    args_text = ", ".join(f"%{n}: {arg_type[n]}" for n in input_order)
     final = schedule.ops[-1].produces
     func_sym = f"{schedule.model_name}_graph".replace(".", "_")
     lines.append(
         f"  func.func @{func_sym}({args_text}) -> {arg_type[final]} "
         f"attributes {{tt.function_type = \"forward_device\"}} {{")
 
+    # Grab a device handle once; each ttnn.empty uses it to allocate.
+    lines.append(
+        "    %dev = \"ttnn.get_device\"() <{mesh_offset = "
+        "#ttnn<mesh_offset 0x0>, mesh_shape = #ttnn<mesh_shape 1x1>}> : "
+        "() -> !ttnn.device")
+
+    # Allocate every produced tensor via ttnn.empty up front; ops below
+    # consume the SSA values directly.
+    for name in produced:
+        k, n = tensor_shape[name]
+        elt = _mlir_elt(tensor_dtype[name])
+        lines.append(
+            f"    %{name} = \"ttnn.empty\"(%dev) <{{"
+            f"layout = #ttnn.layout<tile>, "
+            f"shape = #ttnn.shape<{k}x{n}>}}> : "
+            f"(!ttnn.device) -> {arg_type[name]}")
+
     for op in schedule.ops:
         cores_text = _emit_core_ranges(op.cores)
-        cbs = derive_cbs(op)
-        cb_text = ", ".join(_emit_cb(cb, cores_text) for cb in cbs)
+        if op.cbs:
+            # Per-CB core_ranges honoured so leader / worker / tail cores can
+            # share an index without stepping on each other's L1.
+            cbs = op.cbs
+            cb_entries = [_emit_cb(cb,
+                                   _emit_core_ranges(cb.cores or op.cores))
+                          for cb in cbs]
+        else:
+            cbs = derive_cbs(op)
+            cb_entries = [_emit_cb(cb, cores_text) for cb in cbs]
+        cb_text = ", ".join(cb_entries)
         if op.kernels:
             # Multi-kernel program (e.g. attention 7 kernels across leader
             # and worker grids). Each entry carries its own cores + source.
@@ -306,6 +323,14 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
                 "source_write_kernel", writer_src, cores_text))
         kernel_decl = ", ".join(kernels_text)
 
+        if op.semaphores:
+            sem_entries = [_emit_sem(s,
+                                     _emit_core_ranges(s.cores or op.cores))
+                           for s in op.semaphores]
+            sem_text = ", ".join(sem_entries)
+        else:
+            sem_text = ""
+
         operands = list(op.consumes) + [op.produces]
         operand_vals = ", ".join(f"%{t}" for t in operands)
         operand_types = ", ".join(arg_type[t] for t in operands)
@@ -313,7 +338,7 @@ def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
             f"    \"ttnn.generic\"({operand_vals}) <{{"
             f"operandSegmentSizes = array<i32: {len(operands)}, 0>, "
             f"program = #ttnn.program<kernels = [{kernel_decl}], "
-            f"cbs = [{cb_text}], semaphores = []>}}> : "
+            f"cbs = [{cb_text}], semaphores = [{sem_text}]>}}> : "
             f"({operand_types}) -> ()")
 
     lines.append(f"    return %{final} : {arg_type[final]}")

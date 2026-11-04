@@ -12,6 +12,7 @@ import json
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+from .codegen_types import CBSpec, SemSpec
 from .plan import CandidatePlan
 from .problem import (AnalysisProblem, ComputeKernelConfig, KernelEntry,
                       KernelSpec)
@@ -31,6 +32,13 @@ class ResidentOp:
     reader_kernel_source: Optional[str] = None
     writer_kernel_source: Optional[str] = None
     kernels: Tuple[KernelEntry, ...] = ()
+    # Explicit semaphores and CBs for the whole program. Only used when the
+    # op does not fit the default "N inputs, 1 output, generic CBs" shape
+    # derive_cbs / derive_semaphores build. The 7-kernel attention needs
+    # per-core-range semaphore IDs matching attn_common.hpp sem_* ct args,
+    # and a bespoke CB map, neither of which the defaults can guess.
+    semaphores: Tuple[SemSpec, ...] = ()
+    cbs: Tuple[CBSpec, ...] = ()
 
 
 @dataclass(frozen=True)
