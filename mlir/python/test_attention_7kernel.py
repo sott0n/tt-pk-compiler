@@ -180,7 +180,11 @@ def main():
 
     with open(mlir, "w") as f:
         f.write(text)
-    _run([_OPT, "--ttcore-register-device", mlir, "-o", reg])
+    sysdesc_arg = "--ttcore-register-device"
+    sysdesc_env = os.environ.get("SYSTEM_DESC_PATH")
+    if sysdesc_env:
+        sysdesc_arg = f"--ttcore-register-device=system-desc-path={sysdesc_env}"
+    _run([_OPT, sysdesc_arg, mlir, "-o", reg])
     _check(os.path.getsize(reg) > 0, "ttmlir-opt accepts the module")
     _run([_XLATE, "--ttnn-to-flatbuffer", reg, "-o", fb])
     size = os.path.getsize(fb)
