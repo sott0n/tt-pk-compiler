@@ -155,15 +155,34 @@ def _emit_named_args(values, prefix: str) -> str:
     return f"[{parts}]"
 
 
+def _emit_rt_args(rt_args) -> str:
+    # Emit per-core rt_args: `[#ttnn.core_runtime_args<core_coord=<x,y>,
+    # args=[...]>, ...]`. Each args list is a sequence of KernelArg values
+    # (literal uint or typed tag), same shape as common_rt_args.
+    if not rt_args:
+        return "[]"
+    parts = []
+    for (x, y), args in rt_args:
+        if args:
+            args_body = ", ".join(_emit_one_arg(v, f'rt{x}_{y}_', i)
+                                  for i, v in enumerate(args))
+        else:
+            args_body = ""
+        parts.append(f"#ttnn.core_runtime_args<core_coord = "
+                     f"#ttnn.core_coord<{x}, {y}>, args = [{args_body}]>")
+    return f"[{', '.join(parts)}]"
+
+
 def _emit_data_kernel(mnemonic: str, body: str, cores_text: str,
                       ct_args: Tuple[int, ...] = (),
-                      common_rt_args: Tuple[int, ...] = ()) -> str:
+                      common_rt_args: Tuple[int, ...] = (),
+                      rt_args=()) -> str:
     src_lit = f"\"{escape_for_mlir(body)}\""
     return (f"#ttnn.{mnemonic}<source = {src_lit}"
             f", core_ranges = {cores_text}"
             f", ct_args = {_emit_named_args(ct_args, 'ct_arg_')}"
             f", common_rt_args = {_emit_named_args(common_rt_args, 'rt_arg_')}"
-            f", rt_args = []>")
+            f", rt_args = {_emit_rt_args(rt_args)}>")
 
 
 # The flatbuffer target JIT-links the C++ body into a RISC-V elf whose
@@ -177,7 +196,8 @@ _WRITER_STUB = "void kernel_main() {}"
 def _emit_compute_source(body: str, cores_text: str,
                          cfg, cb_count: int,
                          ct_args: Tuple[int, ...] = (),
-                         common_rt_args: Tuple[int, ...] = ()) -> str:
+                         common_rt_args: Tuple[int, ...] = (),
+                         rt_args=()) -> str:
     # Each CB needs an UnpackToDestMode entry; the enum is non-optional
     # in the TD. The flatbuffer target refuses the symbol_ref form unless
     # a matching ttkernel.func lives in the module.
@@ -194,7 +214,7 @@ def _emit_compute_source(body: str, cores_text: str,
         f", math_approx_mode = {str(cfg.math_approx_mode).lower()}"
         f", ct_args = {_emit_named_args(ct_args, 'ct_arg_')}"
         f", common_rt_args = {_emit_named_args(common_rt_args, 'rt_arg_')}"
-        f", rt_args = []>"
+        f", rt_args = {_emit_rt_args(rt_args)}>"
     )
 
 
@@ -210,15 +230,16 @@ def _emit_entry(entry: KernelEntry, cb_count: int,
     if entry.role == "compute":
         cfg = entry.compute_config or default_cfg
         return _emit_compute_source(entry.source, cores_text, cfg, cb_count,
-                                    entry.ct_args, entry.common_rt_args)
+                                    entry.ct_args, entry.common_rt_args,
+                                    entry.rt_args)
     if entry.role == "reader":
         return _emit_data_kernel("source_read_kernel", entry.source,
                                  cores_text, entry.ct_args,
-                                 entry.common_rt_args)
+                                 entry.common_rt_args, entry.rt_args)
     if entry.role == "writer":
         return _emit_data_kernel("source_write_kernel", entry.source,
                                  cores_text, entry.ct_args,
-                                 entry.common_rt_args)
+                                 entry.common_rt_args, entry.rt_args)
     raise ValueError(f"unknown KernelEntry.role {entry.role!r}; "
                      f"expected compute | reader | writer")
 

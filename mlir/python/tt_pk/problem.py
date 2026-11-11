@@ -47,6 +47,10 @@ class KernelEntry:
     compute_config: Optional[ComputeKernelConfig] = None
     ct_args: Tuple[KernelArg, ...] = ()
     common_rt_args: Tuple[KernelArg, ...] = ()
+    # Per-core runtime args: tuple of ((x, y), (arg, arg, ...)) pairs.
+    # Each core on `cores` typically gets one entry; cores without an
+    # entry receive no per-core rt_args.
+    rt_args: Tuple[Tuple[Tuple[int, int], Tuple[KernelArg, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
