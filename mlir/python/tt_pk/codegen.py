@@ -130,15 +130,28 @@ def _emit_sem(sem: SemSpec, cores_text: str) -> str:
             f"initial_value = {sem.initial_value}>")
 
 
-def _emit_named_args(values: Tuple[int, ...], prefix: str) -> str:
-    # tt-metal kernels call get_compile_time_arg_val(N) by index, so the
-    # name is cosmetic; the runtime pushes `value` straight onto the
-    # KernelDescriptor's ct_args vector.
+def _emit_one_arg(value, prefix: str, i: int) -> str:
+    # An int is a literal ct/rt_arg value. Tuples tag typed KernelArg attrs:
+    #   ("address_of_tensor", N)       -> #ttnn.kernel_arg_address_of_tensor<N>
+    #   ("cb_buffer_index", N)         -> #ttnn.kernel_arg_cb_buffer_index<N>
+    #   ("tensor_accessor_args", N)    -> #ttnn.kernel_arg_tensor_accessor_args<N>
+    if isinstance(value, tuple) and len(value) == 2:
+        kind, idx = value
+        if kind == "address_of_tensor":
+            return f"#ttnn.kernel_arg_address_of_tensor<{int(idx)}>"
+        if kind == "cb_buffer_index":
+            return f"#ttnn.kernel_arg_cb_buffer_index<{int(idx)}>"
+        if kind == "tensor_accessor_args":
+            return f"#ttnn.kernel_arg_tensor_accessor_args<{int(idx)}>"
+        raise ValueError(f"unknown kernel_arg tag {kind!r}")
+    return (f"#ttnn.kernel_named_arg<name = \"{prefix}{i}\", "
+            f"value = {int(value)}>")
+
+
+def _emit_named_args(values, prefix: str) -> str:
     if not values:
         return "[]"
-    parts = ", ".join(
-        f"#ttnn.kernel_named_arg<name = \"{prefix}{i}\", value = {int(v)}>"
-        for i, v in enumerate(values))
+    parts = ", ".join(_emit_one_arg(v, prefix, i) for i, v in enumerate(values))
     return f"[{parts}]"
 
 

@@ -8,7 +8,13 @@ mutate it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+
+# A kernel ct/rt_arg is either a literal uint (ct_arg_N value) or a typed
+# tag that the codegen lowers to the matching #ttnn.kernel_arg_* attr:
+#   ("address_of_tensor", N) | ("cb_buffer_index", N) |
+#   ("tensor_accessor_args", N)
+KernelArg = Union[int, Tuple[str, int]]
 
 
 @dataclass(frozen=True)
@@ -39,8 +45,8 @@ class KernelEntry:
     source: str
     cores: Tuple[Tuple[int, int], ...]
     compute_config: Optional[ComputeKernelConfig] = None
-    ct_args: Tuple[int, ...] = ()
-    common_rt_args: Tuple[int, ...] = ()
+    ct_args: Tuple[KernelArg, ...] = ()
+    common_rt_args: Tuple[KernelArg, ...] = ()
 
 
 @dataclass(frozen=True)
