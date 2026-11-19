@@ -254,7 +254,158 @@ def _tile_grid(k: int, n: int) -> Tuple[int, int]:
     return max(1, (k + 31) // 32), max(1, (n + 31) // 32)
 
 
-def emit_ttnn_generic(schedule: ResidentSchedule) -> str:
+def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
+    # Mirrors upstream generic_op.mlir: inputs/outputs flow in DRAM
+    # interleaved at the function boundary; a to_memory_config pair
+    # wraps each ttnn.generic in L1 block_sharded so the kernels can
+    # use the raw get_noc_addr(my_x, my_y, l1_offset) pattern.
+    if len(schedule.ops) != 1:
+        raise NotImplementedError(
+            "l1_block_sharded path only supports single-op schedules; "
+            f"got {len(schedule.ops)} ops")
+    op = schedule.ops[0]
+
+    tensor_shape: Dict[str, Tuple[int, int]] = {}
+    tensor_dtype: Dict[str, str] = {}
+    for name in op.consumes:
+        tensor_shape[name] = (op.k, op.n)
+        tensor_dtype[name] = op.dtype
+    tensor_shape[op.produces] = (op.k, op.n)
+    tensor_dtype[op.produces] = op.dtype
+
+    input_order = list(op.consumes)
+
+    dram_layouts: Dict[Tuple[int, int, str], str] = {}
+    l1_layouts: Dict[Tuple[int, int, str, Tuple[Tuple[int, int], ...]], str] = {}
+
+    def dram_alias(k: int, n: int, elt: str) -> str:
+        key = (k, n, elt)
+        if key not in dram_layouts:
+            dram_layouts[key] = f"#ttnn_layout_dram{len(dram_layouts)}"
+        return dram_layouts[key]
+
+    def l1_alias(k: int, n: int, elt: str,
+                 cores: Tuple[Tuple[int, int], ...]) -> str:
+        key = (k, n, elt, cores)
+        if key not in l1_layouts:
+            l1_layouts[key] = f"#ttnn_layout_l1{len(l1_layouts)}"
+        return l1_layouts[key]
+
+    tensor_dram_type: Dict[str, str] = {}
+    tensor_l1_type: Dict[str, str] = {}
+    for name in input_order + [op.produces]:
+        k, n = tensor_shape[name]
+        elt = _mlir_elt(tensor_dtype[name])
+        tensor_dram_type[name] = f"tensor<{k}x{n}x{elt}, {dram_alias(k, n, elt)}>"
+        tensor_l1_type[name] = (
+            f"tensor<{k}x{n}x{elt}, {l1_alias(k, n, elt, op.cores)}>")
+
+    lines: List[str] = [
+        "#dram = #ttnn.buffer_type<dram>",
+        "#l1 = #ttnn.buffer_type<l1>",
+    ]
+    for (k, n, elt), alias in dram_layouts.items():
+        kt, nt = _tile_grid(k, n)
+        lines.append(
+            f"{alias} = #ttnn.ttnn_layout<"
+            f"(d0, d1) -> (d0, d1), <1x1>, "
+            f"memref<{kt}x{nt}x!ttcore.tile<32x32, {elt}>, #dram>, "
+            f"<interleaved>>")
+    for (k, n, elt, cores), alias in l1_layouts.items():
+        kt, nt = _tile_grid(k, n)
+        cores_text = _emit_core_ranges(cores)
+        lines.append(
+            f"{alias} = #ttnn.ttnn_layout<"
+            f"(d0, d1) -> (d0, d1), <1x1>, "
+            f"memref<{kt}x{nt}x!ttcore.tile<32x32, {elt}>, #l1>, "
+            f"<block_sharded>, "
+            f"core_ranges = #ttnn.core_range_set{cores_text}>")
+    lines.append("")
+    lines.append("module {")
+
+    args_text = ", ".join(f"%{n}: {tensor_dram_type[n]}" for n in input_order)
+    func_sym = f"{schedule.model_name}_graph".replace(".", "_")
+    lines.append(
+        f"  func.func @{func_sym}({args_text}) -> {tensor_dram_type[op.produces]} "
+        f"attributes {{tt.function_type = \"forward_device\"}} {{")
+
+    lines.append(
+        "    %dev = \"ttnn.get_device\"() <{mesh_offset = "
+        "#ttnn<mesh_offset 0x0>, mesh_shape = #ttnn<mesh_shape 1x1>}> : "
+        "() -> !ttnn.device")
+
+    for name in input_order:
+        lines.append(
+            f"    %{name}_l1 = \"ttnn.to_memory_config\"(%{name}) : "
+            f"({tensor_dram_type[name]}) -> {tensor_l1_type[name]}")
+
+    k, n = tensor_shape[op.produces]
+    lines.append(
+        f"    %{op.produces} = \"ttnn.empty\"(%dev) <{{"
+        f"layout = #ttnn.layout<tile>, shape = #ttnn.shape<{k}x{n}>}}> : "
+        f"(!ttnn.device) -> {tensor_l1_type[op.produces]}")
+
+    cores_text = _emit_core_ranges(op.cores)
+    if op.cbs:
+        cbs = op.cbs
+        cb_entries = [_emit_cb(cb, _emit_core_ranges(cb.cores or op.cores))
+                      for cb in cbs]
+    else:
+        cbs = derive_cbs(op)
+        cb_entries = [_emit_cb(cb, cores_text) for cb in cbs]
+    cb_text = ", ".join(cb_entries)
+    if op.kernels:
+        kernels_text = [_emit_entry(e, len(cbs), op.compute_config)
+                        for e in op.kernels]
+    else:
+        kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
+        reader_src = op.reader_kernel_source or _READER_STUB
+        writer_src = op.writer_kernel_source or _WRITER_STUB
+        kernels_text.append(_emit_data_kernel(
+            "source_read_kernel", reader_src, cores_text))
+        kernels_text.append(_emit_data_kernel(
+            "source_write_kernel", writer_src, cores_text))
+    kernel_decl = ", ".join(kernels_text)
+
+    if op.semaphores:
+        sem_entries = [_emit_sem(s, _emit_core_ranges(s.cores or op.cores))
+                       for s in op.semaphores]
+        sem_text = ", ".join(sem_entries)
+    else:
+        sem_text = ""
+
+    operand_vals = ", ".join(
+        [f"%{n}_l1" for n in input_order] + [f"%{op.produces}"])
+    operand_types = ", ".join(
+        [tensor_l1_type[n] for n in input_order]
+        + [tensor_l1_type[op.produces]])
+    total_operands = len(input_order) + 1
+    lines.append(
+        f"    \"ttnn.generic\"({operand_vals}) <{{"
+        f"operandSegmentSizes = array<i32: {total_operands}, 0>, "
+        f"program = #ttnn.program<kernels = [{kernel_decl}], "
+        f"cbs = [{cb_text}], semaphores = [{sem_text}]>}}> : "
+        f"({operand_types}) -> ()")
+
+    lines.append(
+        f"    %{op.produces}_dram = \"ttnn.to_memory_config\"(%{op.produces}) : "
+        f"({tensor_l1_type[op.produces]}) -> {tensor_dram_type[op.produces]}")
+    lines.append(
+        f"    return %{op.produces}_dram : {tensor_dram_type[op.produces]}")
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def emit_ttnn_generic(schedule: ResidentSchedule,
+                      operand_memspace: str = "dram_interleaved") -> str:
+    if operand_memspace == "l1_block_sharded":
+        return _emit_ttnn_generic_l1_sharded(schedule)
+    if operand_memspace != "dram_interleaved":
+        raise ValueError(
+            f"unknown operand_memspace {operand_memspace!r}; "
+            f"expected 'dram_interleaved' | 'l1_block_sharded'")
     tensor_shape: Dict[str, Tuple[int, int]] = {}
     tensor_dtype: Dict[str, str] = {}
     # Inputs are tensors consumed by some op but produced by none; they
