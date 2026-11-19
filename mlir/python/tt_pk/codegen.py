@@ -313,13 +313,30 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
             f"<interleaved>>")
     for (k, n, elt, cores), alias in l1_layouts.items():
         kt, nt = _tile_grid(k, n)
-        cores_text = _emit_core_ranges(cores)
+        xs = {c[0] for c in cores}
+        ys = {c[1] for c in cores}
+        grid_w = max(xs) - min(xs) + 1
+        grid_h = max(ys) - min(ys) + 1
+        if grid_w * grid_h != len(cores):
+            raise NotImplementedError(
+                f"L1 block_sharded needs a rectangular core set; got {cores}")
+        if kt % grid_h or nt % grid_w:
+            raise NotImplementedError(
+                f"tile grid {kt}x{nt} does not divide across "
+                f"core grid {grid_h}x{grid_w}")
+        shard_kt = kt // grid_h
+        shard_nt = nt // grid_w
+        # block_sharded needs a single rectangular core_range covering the
+        # whole shard grid; per-cell ranges trip the TTNN tensor_spec check.
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        bbox_text = f"<[#ttnn.core_range<({x0}, {y0}), ({x1}, {y1})>]>"
         lines.append(
             f"{alias} = #ttnn.ttnn_layout<"
-            f"(d0, d1) -> (d0, d1), <1x1>, "
-            f"memref<{kt}x{nt}x!ttcore.tile<32x32, {elt}>, #l1>, "
+            f"(d0, d1) -> (d0, d1), <{grid_h}x{grid_w}>, "
+            f"memref<{shard_kt}x{shard_nt}x!ttcore.tile<32x32, {elt}>, #l1>, "
             f"<block_sharded>, "
-            f"core_ranges = #ttnn.core_range_set{cores_text}>")
+            f"core_ranges = #ttnn.core_range_set{bbox_text}>")
     lines.append("")
     lines.append("module {")
 
