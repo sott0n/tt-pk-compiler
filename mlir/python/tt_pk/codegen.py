@@ -254,7 +254,8 @@ def _tile_grid(k: int, n: int) -> Tuple[int, int]:
     return max(1, (k + 31) // 32), max(1, (n + 31) // 32)
 
 
-def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
+def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule,
+                                  mesh_shape: str = "1x1") -> str:
     # Mirrors upstream generic_op.mlir: inputs/outputs flow in DRAM
     # interleaved at the function boundary; a to_memory_config pair wraps
     # the ttnn.generic chain in L1 block_sharded so the kernels can use
@@ -364,7 +365,8 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
 
     lines.append(
         "    %dev = \"ttnn.get_device\"() <{mesh_offset = "
-        "#ttnn<mesh_offset 0x0>, mesh_shape = #ttnn<mesh_shape 1x1>}> : "
+        "#ttnn<mesh_offset 0x0>, mesh_shape = #ttnn<mesh_shape "
+        f"{mesh_shape}>}}> : "
         "() -> !ttnn.device")
 
     # SSA names tracked so chained ops reference the right handle.
@@ -446,9 +448,10 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
 
 
 def emit_ttnn_generic(schedule: ResidentSchedule,
-                      operand_memspace: str = "dram_interleaved") -> str:
+                      operand_memspace: str = "dram_interleaved",
+                      mesh_shape: str = "1x1") -> str:
     if operand_memspace == "l1_block_sharded":
-        return _emit_ttnn_generic_l1_sharded(schedule)
+        return _emit_ttnn_generic_l1_sharded(schedule, mesh_shape)
     if operand_memspace != "dram_interleaved":
         raise ValueError(
             f"unknown operand_memspace {operand_memspace!r}; "
