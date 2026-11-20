@@ -256,25 +256,37 @@ def _tile_grid(k: int, n: int) -> Tuple[int, int]:
 
 def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
     # Mirrors upstream generic_op.mlir: inputs/outputs flow in DRAM
-    # interleaved at the function boundary; a to_memory_config pair
-    # wraps each ttnn.generic in L1 block_sharded so the kernels can
-    # use the raw get_noc_addr(my_x, my_y, l1_offset) pattern.
-    if len(schedule.ops) != 1:
-        raise NotImplementedError(
-            "l1_block_sharded path only supports single-op schedules; "
-            f"got {len(schedule.ops)} ops")
-    op = schedule.ops[0]
-
+    # interleaved at the function boundary; a to_memory_config pair wraps
+    # the ttnn.generic chain in L1 block_sharded so the kernels can use
+    # the raw get_noc_addr(my_x, my_y, l1_offset) pattern. Intermediates
+    # between ops stay in L1 at the producing op's cores; a later op
+    # consuming the same tensor on a different core set is a reshard
+    # we do not emit yet.
     tensor_shape: Dict[str, Tuple[int, int]] = {}
     tensor_dtype: Dict[str, str] = {}
-    shape_override = dict(op.operand_shapes)
-    for name in op.consumes:
-        tensor_shape[name] = shape_override.get(name, (op.k, op.n))
-        tensor_dtype[name] = op.dtype
-    tensor_shape[op.produces] = shape_override.get(op.produces, (op.k, op.n))
-    tensor_dtype[op.produces] = op.dtype
+    tensor_cores: Dict[str, Tuple[Tuple[int, int], ...]] = {}
+    for op in schedule.ops:
+        shape_override = dict(op.operand_shapes)
+        for name in op.consumes:
+            tensor_shape.setdefault(name,
+                                    shape_override.get(name, (op.k, op.n)))
+            tensor_dtype.setdefault(name, op.dtype)
+            tensor_cores.setdefault(name, op.cores)
+        tensor_shape[op.produces] = shape_override.get(
+            op.produces, (op.k, op.n))
+        tensor_dtype[op.produces] = op.dtype
+        tensor_cores[op.produces] = op.cores
 
-    input_order = list(op.consumes)
+    produced_names = {op.produces for op in schedule.ops}
+    input_order: List[str] = []
+    seen: set = set()
+    for op in schedule.ops:
+        for name in op.consumes:
+            if name in produced_names or name in seen:
+                continue
+            input_order.append(name)
+            seen.add(name)
+    final = schedule.ops[-1].produces
 
     dram_layouts: Dict[Tuple[int, int, str], str] = {}
     l1_layouts: Dict[Tuple[int, int, str, Tuple[Tuple[int, int], ...]], str] = {}
@@ -294,12 +306,15 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
 
     tensor_dram_type: Dict[str, str] = {}
     tensor_l1_type: Dict[str, str] = {}
-    for name in input_order + [op.produces]:
+    for name in input_order + [final]:
         k, n = tensor_shape[name]
         elt = _mlir_elt(tensor_dtype[name])
-        tensor_dram_type[name] = f"tensor<{k}x{n}x{elt}, {dram_alias(k, n, elt)}>"
+        tensor_dram_type[name] = (
+            f"tensor<{k}x{n}x{elt}, {dram_alias(k, n, elt)}>")
+    for name, (k, n) in tensor_shape.items():
+        elt = _mlir_elt(tensor_dtype[name])
         tensor_l1_type[name] = (
-            f"tensor<{k}x{n}x{elt}, {l1_alias(k, n, elt, op.cores)}>")
+            f"tensor<{k}x{n}x{elt}, {l1_alias(k, n, elt, tensor_cores[name])}>")
 
     lines: List[str] = [
         "#dram = #ttnn.buffer_type<dram>",
@@ -344,7 +359,7 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
     args_text = ", ".join(f"%{n}: {tensor_dram_type[n]}" for n in input_order)
     func_sym = f"{schedule.model_name}_graph".replace(".", "_")
     lines.append(
-        f"  func.func @{func_sym}({args_text}) -> {tensor_dram_type[op.produces]} "
+        f"  func.func @{func_sym}({args_text}) -> {tensor_dram_type[final]} "
         f"attributes {{tt.function_type = \"forward_device\"}} {{")
 
     lines.append(
@@ -352,64 +367,78 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
         "#ttnn<mesh_offset 0x0>, mesh_shape = #ttnn<mesh_shape 1x1>}> : "
         "() -> !ttnn.device")
 
+    # SSA names tracked so chained ops reference the right handle.
+    ssa: Dict[str, str] = {}
     for name in input_order:
+        l1_name = f"{name}_l1"
         lines.append(
-            f"    %{name}_l1 = \"ttnn.to_memory_config\"(%{name}) : "
+            f"    %{l1_name} = \"ttnn.to_memory_config\"(%{name}) : "
             f"({tensor_dram_type[name]}) -> {tensor_l1_type[name]}")
+        ssa[name] = l1_name
 
-    k, n = tensor_shape[op.produces]
+    for op in schedule.ops:
+        # Reshard across core sets is not yet supported; refuse upfront
+        # so the compiler never silently drops data.
+        for name in op.consumes:
+            if tensor_cores[name] != op.cores:
+                raise NotImplementedError(
+                    f"tensor {name!r} lives on cores {tensor_cores[name]} "
+                    f"but op {op.kernel_name!r} runs on {op.cores}; "
+                    f"L1 reshard not implemented")
+        k, n = tensor_shape[op.produces]
+        lines.append(
+            f"    %{op.produces} = \"ttnn.empty\"(%dev) <{{"
+            f"layout = #ttnn.layout<tile>, shape = #ttnn.shape<{k}x{n}>}}> : "
+            f"(!ttnn.device) -> {tensor_l1_type[op.produces]}")
+        ssa[op.produces] = op.produces
+
+        cores_text = _emit_core_ranges(op.cores)
+        if op.cbs:
+            cbs = op.cbs
+            cb_entries = [_emit_cb(cb, _emit_core_ranges(cb.cores or op.cores))
+                          for cb in cbs]
+        else:
+            cbs = derive_cbs(op)
+            cb_entries = [_emit_cb(cb, cores_text) for cb in cbs]
+        cb_text = ", ".join(cb_entries)
+        if op.kernels:
+            kernels_text = [_emit_entry(e, len(cbs), op.compute_config)
+                            for e in op.kernels]
+        else:
+            kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
+            reader_src = op.reader_kernel_source or _READER_STUB
+            writer_src = op.writer_kernel_source or _WRITER_STUB
+            kernels_text.append(_emit_data_kernel(
+                "source_read_kernel", reader_src, cores_text))
+            kernels_text.append(_emit_data_kernel(
+                "source_write_kernel", writer_src, cores_text))
+        kernel_decl = ", ".join(kernels_text)
+
+        if op.semaphores:
+            sem_entries = [_emit_sem(s, _emit_core_ranges(s.cores or op.cores))
+                           for s in op.semaphores]
+            sem_text = ", ".join(sem_entries)
+        else:
+            sem_text = ""
+
+        operand_vals = ", ".join(
+            [f"%{ssa[n]}" for n in op.consumes] + [f"%{op.produces}"])
+        operand_types = ", ".join(
+            [tensor_l1_type[n] for n in op.consumes]
+            + [tensor_l1_type[op.produces]])
+        total_operands = len(op.consumes) + 1
+        lines.append(
+            f"    \"ttnn.generic\"({operand_vals}) <{{"
+            f"operandSegmentSizes = array<i32: {total_operands}, 0>, "
+            f"program = #ttnn.program<kernels = [{kernel_decl}], "
+            f"cbs = [{cb_text}], semaphores = [{sem_text}]>}}> : "
+            f"({operand_types}) -> ()")
+
     lines.append(
-        f"    %{op.produces} = \"ttnn.empty\"(%dev) <{{"
-        f"layout = #ttnn.layout<tile>, shape = #ttnn.shape<{k}x{n}>}}> : "
-        f"(!ttnn.device) -> {tensor_l1_type[op.produces]}")
-
-    cores_text = _emit_core_ranges(op.cores)
-    if op.cbs:
-        cbs = op.cbs
-        cb_entries = [_emit_cb(cb, _emit_core_ranges(cb.cores or op.cores))
-                      for cb in cbs]
-    else:
-        cbs = derive_cbs(op)
-        cb_entries = [_emit_cb(cb, cores_text) for cb in cbs]
-    cb_text = ", ".join(cb_entries)
-    if op.kernels:
-        kernels_text = [_emit_entry(e, len(cbs), op.compute_config)
-                        for e in op.kernels]
-    else:
-        kernels_text = [_emit_compute_kernel(op, cores_text, len(cbs))]
-        reader_src = op.reader_kernel_source or _READER_STUB
-        writer_src = op.writer_kernel_source or _WRITER_STUB
-        kernels_text.append(_emit_data_kernel(
-            "source_read_kernel", reader_src, cores_text))
-        kernels_text.append(_emit_data_kernel(
-            "source_write_kernel", writer_src, cores_text))
-    kernel_decl = ", ".join(kernels_text)
-
-    if op.semaphores:
-        sem_entries = [_emit_sem(s, _emit_core_ranges(s.cores or op.cores))
-                       for s in op.semaphores]
-        sem_text = ", ".join(sem_entries)
-    else:
-        sem_text = ""
-
-    operand_vals = ", ".join(
-        [f"%{n}_l1" for n in input_order] + [f"%{op.produces}"])
-    operand_types = ", ".join(
-        [tensor_l1_type[n] for n in input_order]
-        + [tensor_l1_type[op.produces]])
-    total_operands = len(input_order) + 1
+        f"    %{final}_dram = \"ttnn.to_memory_config\"(%{ssa[final]}) : "
+        f"({tensor_l1_type[final]}) -> {tensor_dram_type[final]}")
     lines.append(
-        f"    \"ttnn.generic\"({operand_vals}) <{{"
-        f"operandSegmentSizes = array<i32: {total_operands}, 0>, "
-        f"program = #ttnn.program<kernels = [{kernel_decl}], "
-        f"cbs = [{cb_text}], semaphores = [{sem_text}]>}}> : "
-        f"({operand_types}) -> ()")
-
-    lines.append(
-        f"    %{op.produces}_dram = \"ttnn.to_memory_config\"(%{op.produces}) : "
-        f"({tensor_l1_type[op.produces]}) -> {tensor_dram_type[op.produces]}")
-    lines.append(
-        f"    return %{op.produces}_dram : {tensor_dram_type[op.produces]}")
+        f"    return %{final}_dram : {tensor_dram_type[final]}")
     lines.append("  }")
     lines.append("}")
     lines.append("")
