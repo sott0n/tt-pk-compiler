@@ -39,6 +39,10 @@ class ResidentOp:
     # and a bespoke CB map, neither of which the defaults can guess.
     semaphores: Tuple[SemSpec, ...] = ()
     cbs: Tuple[CBSpec, ...] = ()
+    # Per-operand (k, n) overrides keyed by tensor name. Any name absent
+    # here falls back to (op.k, op.n). Matmul sets A, B, C to the three
+    # distinct shapes; elementwise ops leave this empty.
+    operand_shapes: Tuple[Tuple[str, Tuple[int, int]], ...] = ()
 
 
 @dataclass(frozen=True)

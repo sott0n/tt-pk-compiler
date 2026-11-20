@@ -267,10 +267,11 @@ def _emit_ttnn_generic_l1_sharded(schedule: ResidentSchedule) -> str:
 
     tensor_shape: Dict[str, Tuple[int, int]] = {}
     tensor_dtype: Dict[str, str] = {}
+    shape_override = dict(op.operand_shapes)
     for name in op.consumes:
-        tensor_shape[name] = (op.k, op.n)
+        tensor_shape[name] = shape_override.get(name, (op.k, op.n))
         tensor_dtype[name] = op.dtype
-    tensor_shape[op.produces] = (op.k, op.n)
+    tensor_shape[op.produces] = shape_override.get(op.produces, (op.k, op.n))
     tensor_dtype[op.produces] = op.dtype
 
     input_order = list(op.consumes)
