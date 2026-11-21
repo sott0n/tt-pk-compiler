@@ -126,6 +126,10 @@ class StateBufferSpec:
     name: str
     tile_count: int
     dtype: str = "bf16"
+    # Empty binds the state to every worker core. A non-empty tuple binds
+    # it only to the listed nodes' cores, keeping per-node resident state
+    # (recurrent S, conv state) off cores that never read it.
+    nodes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -134,6 +138,9 @@ class WeightRingSpec:
     stages: int
     tile_count: int
     dtype: str = "bf16"
+    # Same meaning as StateBufferSpec.nodes: empty = all workers, listed
+    # = only those nodes carry this weight ring.
+    nodes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

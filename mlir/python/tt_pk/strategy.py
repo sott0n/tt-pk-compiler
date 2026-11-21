@@ -206,29 +206,57 @@ def _derive_sem_graph(topology: Topology) -> Tuple[SemEdge, ...]:
     return tuple(out)
 
 
+def _cores_for_nodes(
+    names: Tuple[str, ...], roles: Tuple[RoleAssignment, ...],
+    label: str,
+) -> Tuple[Tuple[int, int], ...]:
+    cores_by_node = {r.node: r.cores for r in roles}
+    out: Tuple[Tuple[int, int], ...] = ()
+    for n in names:
+        if n not in cores_by_node:
+            raise StrategyError(f"{label}: unknown node {n!r}")
+        out = out + cores_by_node[n]
+    return out
+
+
+def _all_worker_cores(
+    roles: Tuple[RoleAssignment, ...],
+) -> Tuple[Tuple[int, int], ...]:
+    out: Tuple[Tuple[int, int], ...] = ()
+    for r in roles:
+        if r.role == "worker":
+            out = out + r.cores
+    return out
+
+
 def _place_weight_rings(
     problem: AnalysisProblem, roles: Tuple[RoleAssignment, ...],
 ) -> Tuple[WeightRingLayout, ...]:
-    # Weight rings sit on worker cores; they stream weights into the
-    # per-worker compute step.
-    worker_cores: Tuple[Tuple[int, int], ...] = ()
-    for r in roles:
-        if r.role == "worker":
-            worker_cores = worker_cores + r.cores
-    return tuple(WeightRingLayout(spec=w, cores=worker_cores)
-                 for w in problem.weight_rings)
+    # A ring with nodes=() lands on every worker core (legacy broadcast).
+    # A ring with nodes=(...) lands only on those nodes' cores, so a
+    # per-node projection weight (e.g. W_qkv on qkv_proj only) does not
+    # occupy L1 on cores that never read it.
+    broadcast = _all_worker_cores(roles)
+    out: List[WeightRingLayout] = []
+    for w in problem.weight_rings:
+        cores = (_cores_for_nodes(w.nodes, roles, f"weight_ring {w.name!r}")
+                 if w.nodes else broadcast)
+        out.append(WeightRingLayout(spec=w, cores=cores))
+    return tuple(out)
 
 
 def _place_state_buffers(
     problem: AnalysisProblem, roles: Tuple[RoleAssignment, ...],
 ) -> Tuple[StateBufferLayout, ...]:
-    # State buffers live where the attention workers do their KV reads.
-    worker_cores: Tuple[Tuple[int, int], ...] = ()
-    for r in roles:
-        if r.role == "worker":
-            worker_cores = worker_cores + r.cores
-    return tuple(StateBufferLayout(spec=s, cores=worker_cores)
-                 for s in problem.state_buffers)
+    # Same policy as _place_weight_rings; recurrent S belongs only on the
+    # delta_rule cores, conv state only on the matching conv_* cores.
+    broadcast = _all_worker_cores(roles)
+    out: List[StateBufferLayout] = []
+    for s in problem.state_buffers:
+        cores = (_cores_for_nodes(s.nodes, roles, f"state_buffer {s.name!r}")
+                 if s.nodes else broadcast)
+        out.append(StateBufferLayout(spec=s, cores=cores))
+    return tuple(out)
 
 
 # bf16 tile is 32x32 half-precision + metadata; TTNN reports 2112 bytes.
