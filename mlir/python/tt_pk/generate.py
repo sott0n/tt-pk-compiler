@@ -100,7 +100,9 @@ def _check_slot(
         return
     if role == "streamer" and slot == "BRISC":
         for needle in ("noc_async_read_tile", "noc_async_write",
-                       "noc_semaphore_inc", "noc_async_atomic_barrier",
+                       "noc_inline_dw_write",
+                       "noc_async_write_barrier",
+                       "noc_async_atomic_barrier",
                        "get_arg_val",
                        "TensorAccessor", "TensorAccessorArgs",
                        "get_semaphore", "cb_push_back"):
@@ -132,7 +134,8 @@ def _check_slot(
     if slot == "NCRISC":
         if out_edges:
             for needle in ("cb_wait_front", "noc_async_write",
-                           "noc_semaphore_inc",
+                           "noc_inline_dw_write",
+                           "noc_async_write_barrier",
                            "noc_async_atomic_barrier",
                            "get_arg_val", "get_semaphore"):
                 if needle not in src:

@@ -158,10 +158,16 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     lines.append(
         f"                {s}_dest_x, {s}_dest_y, "
         f"{s}_dest_sem_addr);")
-    lines.append(f"            noc_semaphore_inc({s}_sem, 1);")
+    # Writing the sem via noc_inline_dw_write keeps the sem notification on
+    # the same NOC path/ordering class as the data burst above, so the
+    # consumer's noc_semaphore_wait_min sees the sem update only after the
+    # slot write has landed. Carrying a monotonic tile_idx+1 lets the
+    # receiver use wait_min unchanged.
+    lines.append(f"            noc_inline_dw_write({s}_sem, tile_idx + 1);")
     lines.append(f"            cb_pop_front(cb_{s}, 1);")
     lines.append("        }")
     lines.append("    }")
+    lines.append("    noc_async_write_barrier();")
     lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -344,10 +350,15 @@ def _render_compute_ncrisc(
         lines.append(
             f"                {e.stream}_dest_x, {e.stream}_dest_y, "
             f"{e.stream}_dest_sem_addr);")
-        lines.append(f"            noc_semaphore_inc({e.stream}_sem, 1);")
+        # Same ordering rationale as the streamer BRISC: inline_dw_write
+        # follows the slot write on the same path, carrying a monotonic
+        # tile_idx+1 the receiver reads with wait_min.
+        lines.append(
+            f"            noc_inline_dw_write({e.stream}_sem, tile_idx + 1);")
         lines.append("        }")
         lines.append(f"        cb_pop_front(cb_{e.stream}, {n});")
     lines.append("    }")
+    lines.append("    noc_async_write_barrier();")
     lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
