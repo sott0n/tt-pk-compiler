@@ -208,7 +208,7 @@ agent-side milestone (compute + run + verify).
 |---|---|---|
 | M1 | 1 attention layer: strategy + .cpp skeleton emit (Phase 0-5) | compute + tt-metal build + launch + hw ±1e-3 |
 | M2 | 4-chip TP mesh variant of M1 (Phase 5 mesh) | QB2 run |
-| M3 | 1 GDN layer: strategy + .cpp skeleton (Phase 6) | compute + hw |
+| M3 | 1 GDN layer: strategy + .cpp skeleton (Phase 6) | true GDN math (gated_deltanet_forward end to end: beta, decay, output gate, rms_norm_gated, conv bias) on hw; ±1e-3 vs tt-qwen-resident, pcc > 0.999 |
 | M4 | 48 GDN + 16 attn stacked decode strategy (Phase 6+) | full run + numerics |
 | M5 | prefill + decode + handoff strategy (Phase 6+) | handoff impl + full run |
 
