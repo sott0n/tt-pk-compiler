@@ -114,7 +114,10 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
         f"        {s}_src_args, {s}_src_addr, get_tile_size(cb_{s}));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
-    tile = f"get_tile_size(cb_{s})"
+    # Slot stride must match the consumer CB's fifo_page_size, not the
+    # raw tile size: the CB framework places slot k at base + k *
+    # fifo_page_size and page_size includes per-tile header padding.
+    tile = f"get_local_cb_interface(cb_{s}).fifo_page_size"
     n = e.tile_rate_out
     c = e.tile_cycle_out
     lines.append(
@@ -316,7 +319,7 @@ def _render_compute_ncrisc(
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
-        tile = f"get_tile_size(cb_{e.stream})"
+        tile = f"get_local_cb_interface(cb_{e.stream}).fifo_page_size"
         n = e.tile_rate_out
         depth = e.ring_depth
         lines.append(f"        cb_wait_front(cb_{e.stream}, {n});")
@@ -409,7 +412,8 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
     lines.append(
         f"            {s}_dst_accessor,")
     lines.append(
-        f"            get_read_ptr(cb_{s}) + slot * get_tile_size(cb_{s}));")
+        f"            get_read_ptr(cb_{s}) + slot * "
+        f"get_local_cb_interface(cb_{s}).fifo_page_size);")
     lines.append("        noc_async_write_barrier();")
     lines.append(f"        uint64_t sem_back = get_noc_addr(")
     lines.append(
