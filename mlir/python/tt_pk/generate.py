@@ -99,17 +99,19 @@ def _check_slot(
                 f"{cpp_path}: COMPUTE has out-edges but no cb_push_back")
         return
     if role == "streamer" and slot == "BRISC":
-        for needle in ("noc_async_read", "noc_async_write",
+        for needle in ("noc_async_read_tile", "noc_async_write",
                        "noc_semaphore_inc", "get_arg_val",
-                       "get_noc_addr_from_bank_id", "get_semaphore"):
+                       "TensorAccessor", "TensorAccessorArgs",
+                       "get_semaphore"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: streamer BRISC missing {needle!r}")
         return
     if role == "tail" and slot == "NCRISC":
-        for needle in ("noc_semaphore_wait_min", "noc_async_write",
-                       "get_arg_val", "get_noc_addr_from_bank_id",
-                       "get_semaphore", "tt_l1_ptr"):
+        for needle in ("noc_semaphore_wait_min", "noc_async_write_tile",
+                       "get_arg_val", "TensorAccessor",
+                       "TensorAccessorArgs", "get_semaphore",
+                       "tt_l1_ptr"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: tail NCRISC missing {needle!r}")
