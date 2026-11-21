@@ -90,7 +90,8 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     for name_idx, name in enumerate((
             f"{e.stream}_src_addr", f"{e.stream}_dest_x",
             f"{e.stream}_dest_y", f"{e.stream}_dest_cb_addr",
-            f"{e.stream}_dest_sem_id")):
+            f"{e.stream}_dest_sem_id",
+            f"{e.stream}_src_tile_start")):
         lines.append(
             f"    const uint32_t {name} = "
             f"get_arg_val<uint32_t>({name_idx});")
@@ -114,10 +115,12 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
         f"            uint32_t tile_idx = i * {n} + t;")
     if c > 0:
         lines.append(
-            f"            uint32_t src_tile_idx = tile_idx % {c};")
+            f"            uint32_t src_tile_idx = "
+            f"{e.stream}_src_tile_start + (tile_idx % {c});")
     else:
         lines.append(
-            "            uint32_t src_tile_idx = tile_idx;")
+            f"            uint32_t src_tile_idx = "
+            f"{e.stream}_src_tile_start + tile_idx;")
     lines.append(
         f"            cb_reserve_back(cb_{e.stream}, 1);")
     lines.append(
@@ -332,6 +335,9 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
         f"    const uint32_t {e.stream}_dst_addr = "
         f"get_arg_val<uint32_t>(0);")
     lines.append(
+        f"    const uint32_t {e.stream}_dst_tile_start = "
+        f"get_arg_val<uint32_t>(1);")
+    lines.append(
         f"    const auto {e.stream}_dst_accessor = TensorAccessor(")
     lines.append(
         f"        {e.stream}_dst_args, {e.stream}_dst_addr, "
@@ -342,9 +348,10 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
         f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
     lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
     lines.append(
-        f"        noc_async_write_tile(i, {e.stream}_dst_accessor,")
+        f"        noc_async_write_tile({e.stream}_dst_tile_start + i,")
     lines.append(
-        f"            get_read_ptr(cb_{e.stream}));")
+        f"            {e.stream}_dst_accessor, "
+        f"get_read_ptr(cb_{e.stream}));")
     lines.append("        noc_async_write_barrier();")
     lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
     lines.append("    }")
