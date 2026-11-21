@@ -102,7 +102,7 @@ def _check_slot(
         for needle in ("noc_async_read_tile", "noc_async_write",
                        "noc_semaphore_inc", "get_arg_val",
                        "TensorAccessor", "TensorAccessorArgs",
-                       "get_semaphore"):
+                       "get_semaphore", "cb_push_back"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: streamer BRISC missing {needle!r}")

@@ -129,6 +129,10 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     lines.append(
         f"                get_write_ptr(cb_{e.stream}));")
     lines.append("            noc_async_read_barrier();")
+    # Push before forwarding so get_read_ptr returns the just-read slot;
+    # also balances cb_pop_front so pages_received/acked stay in sync.
+    lines.append(
+        f"            cb_push_back(cb_{e.stream}, 1);")
     lines.append(
         f"            uint64_t {e.stream}_dest = get_noc_addr(")
     lines.append(
