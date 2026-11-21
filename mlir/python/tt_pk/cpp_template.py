@@ -123,9 +123,9 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     return "\n".join(lines) + "\n"
 
 
-# BRISC on a compute node: upstream data lands in local CB L1 (producer
-# wrote it); BRISC waits the arrival sem and calls cb_push_back locally
-# so the local COMPUTE's cb_wait_front can see it.
+# BRISC on a compute node: upstream producer bumps the arrival sem once
+# per tile it pushes; this BRISC waits for tile_rate_in tiles then bumps
+# the local CB so COMPUTE's cb_wait_front sees them all.
 def _render_compute_brisc(
     node: str, role: str, in_edges: List[SemEdge]
 ) -> str:
@@ -146,9 +146,12 @@ def _render_compute_brisc(
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
         lines.append(
-            f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
-        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
-        lines.append(f"        cb_push_back(cb_{e.stream}, 1);")
+            f"        noc_semaphore_wait_min(sem_{e.stream}_in, "
+            f"(i + 1) * {e.tile_rate_in});")
+        lines.append(
+            f"        cb_reserve_back(cb_{e.stream}, {e.tile_rate_in});")
+        lines.append(
+            f"        cb_push_back(cb_{e.stream}, {e.tile_rate_in});")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -176,17 +179,21 @@ def _render_compute(
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
-        lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
+        lines.append(
+            f"        cb_wait_front(cb_{e.stream}, {e.tile_rate_in});")
     for e in out_edges:
-        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
+        lines.append(
+            f"        cb_reserve_back(cb_{e.stream}, {e.tile_rate_out});")
     lines.append("")
     lines.append("        // ===== Agent compute here =====")
     lines.append("        // ===== end =====")
     lines.append("")
     for e in in_edges:
-        lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
+        lines.append(
+            f"        cb_pop_front(cb_{e.stream}, {e.tile_rate_in});")
     for e in out_edges:
-        lines.append(f"        cb_push_back(cb_{e.stream}, 1);")
+        lines.append(
+            f"        cb_push_back(cb_{e.stream}, {e.tile_rate_out});")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"

@@ -26,6 +26,11 @@ class TopologyNode:
     role: str
     consumes: Tuple[str, ...] = ()
     produces: Tuple[str, ...] = ()
+    # Tiles exchanged on each stream per node iter. Unlisted streams
+    # default to 1. Lets a matmul node say "4 Q tiles and 4 K tiles per
+    # S tile", or a streamer say "my iter count is the per-stream tile
+    # total" (default 1 already matches that for 1-stream streamers).
+    tile_rates: Tuple[Tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -35,13 +40,21 @@ class Topology:
 
 
 def attention_topology() -> Topology:
+    # Head dim = 128 tiles across the contraction axis (HD_TILES = 4
+    # per head for a 32-tile tile) — but at the whole-cluster granularity
+    # the compute kernels contract HD_TILES=4 inputs per output tile.
+    hd = 4
     return Topology(
         name="qwen36.attention",
         nodes=(
-            TopologyNode("reader", "streamer", (), ("q", "k", "v")),
-            TopologyNode("qk", "worker", ("q", "k"), ("s",)),
+            TopologyNode("reader_q", "streamer", (), ("q",)),
+            TopologyNode("reader_k", "streamer", (), ("k",)),
+            TopologyNode("reader_v", "streamer", (), ("v",)),
+            TopologyNode("qk", "worker", ("q", "k"), ("s",),
+                         tile_rates=(("q", hd), ("k", hd))),
             TopologyNode("softmax", "worker", ("s",), ("p",)),
-            TopologyNode("pv", "worker", ("p", "v"), ("o",)),
+            TopologyNode("pv", "worker", ("p", "v"), ("o",),
+                         tile_rates=(("p", hd), ("v", hd))),
             TopologyNode("concat_heads", "hub", ("o",), ("attn",)),
             TopologyNode("writer", "tail", ("attn",), ()),
         ),

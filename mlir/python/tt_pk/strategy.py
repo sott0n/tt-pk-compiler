@@ -44,6 +44,12 @@ class SemEdge:
     dst: str
     stream: str
     sem_id: int
+    # Tiles consumed per iter on the consumer (dst) and produced per iter
+    # on the producer (src). Typically equal, but matmul-style
+    # contraction makes them differ (qk consumes 4 Q tiles per 1 S tile
+    # it produces).
+    tile_rate_in: int = 1
+    tile_rate_out: int = 1
 
 
 @dataclass(frozen=True)
@@ -137,8 +143,16 @@ def _derive_cbs(
     return tuple(out)
 
 
+def _tile_rate(node, stream: str) -> int:
+    for s, r in node.tile_rates:
+        if s == stream:
+            return r
+    return 1
+
+
 def _derive_sem_graph(topology: Topology) -> Tuple[SemEdge, ...]:
     producers: Dict[str, str] = {}
+    nodes_by_name = {n.name: n for n in topology.nodes}
     for node in topology.nodes:
         for stream in node.produces:
             producers[stream] = node.name
@@ -146,11 +160,15 @@ def _derive_sem_graph(topology: Topology) -> Tuple[SemEdge, ...]:
     sem_id = 0
     for node in topology.nodes:
         for stream in node.consumes:
-            src = producers.get(stream)
-            if src is None:
+            src_name = producers.get(stream)
+            if src_name is None:
                 continue
-            out.append(SemEdge(src=src, dst=node.name, stream=stream,
-                               sem_id=sem_id))
+            out.append(SemEdge(
+                src=src_name, dst=node.name, stream=stream,
+                sem_id=sem_id,
+                tile_rate_in=_tile_rate(node, stream),
+                tile_rate_out=_tile_rate(nodes_by_name[src_name],
+                                         stream)))
             sem_id += 1
     return tuple(out)
 
