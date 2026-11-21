@@ -58,3 +58,26 @@ def decoder_layer_topology() -> Topology:
             TopologyNode("mlp_down", "worker", ("gate", "up"), ("mlp_out",)),
         ),
     )
+
+
+# GDN (Gated DeltaNet) decode-time topology, modeled after
+# tt-qwen-resident gdn/decode.recurrent_forward. The recurrent delta rule
+# reads and updates a persistent [B, H, K, V] state; conv state is per
+# q/k/v. "qkvz_proj" is the fused projection emitting q, k, v, gate.
+def gdn_topology() -> Topology:
+    return Topology(
+        name="qwen36.gdn",
+        nodes=(
+            TopologyNode("qkvz_proj", "worker", ("x_norm",),
+                         ("q", "k", "v", "g")),
+            TopologyNode("q_conv", "worker", ("q",), ("q_c",)),
+            TopologyNode("k_conv", "worker", ("k",), ("k_c",)),
+            TopologyNode("v_conv", "worker", ("v",), ("v_c",)),
+            TopologyNode("l2norm_q", "worker", ("q_c",), ("q_n",)),
+            TopologyNode("l2norm_k", "worker", ("k_c",), ("k_n",)),
+            TopologyNode("silu_g", "worker", ("g",), ("g_a",)),
+            TopologyNode("delta_rule", "worker",
+                         ("q_n", "k_n", "v_c", "g_a"), ("o",)),
+            TopologyNode("o_proj", "worker", ("o",), ("gdn_out",)),
+        ),
+    )

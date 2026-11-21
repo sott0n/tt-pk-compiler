@@ -16,7 +16,8 @@ from tt_pk.generate import generate, verify_structure
 from tt_pk.params import RoleCount, StrategyParams
 from tt_pk.problem import MeshSpec, StateBufferSpec, WeightRingSpec
 from tt_pk.qwen36 import qwen36_27b_problem
-from tt_pk.qwen36_topology import attention_topology, decoder_layer_topology
+from tt_pk.qwen36_topology import (attention_topology,
+                                   decoder_layer_topology, gdn_topology)
 
 
 def _run(name, topology, params, mesh=MeshSpec()):
@@ -40,6 +41,8 @@ def main():
     _run("attention_tp4", attention_topology(),
          StrategyParams(roles=RoleCount(worker=96, hub=4)),
          mesh=MeshSpec(tp_axis=4))
+    _run("gdn_tp1", gdn_topology(),
+         StrategyParams(roles=RoleCount(worker=54)))
     print("OK")
 
 
