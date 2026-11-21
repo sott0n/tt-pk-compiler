@@ -40,10 +40,15 @@ class Topology:
 
 
 def attention_topology() -> Topology:
-    # Head dim = 128 tiles across the contraction axis (HD_TILES = 4
-    # per head for a 32-tile tile) — but at the whole-cluster granularity
-    # the compute kernels contract HD_TILES=4 inputs per output tile.
+    # hd: contraction width per output tile along the head dim (used by
+    #   qk's Q @ K^T, four Q tiles and four K tiles per S tile).
+    # l: contraction width along the key sequence dim (used by pv's
+    #   P @ V, two P and two V tiles per O tile), and also the row
+    #   width that softmax reduces over (L=2 S tiles per row).
+    # qk and softmax consequently push L S / P tiles per iter so the
+    # row reduction can stay on one consumer core.
     hd = 4
+    l = 2
     return Topology(
         name="qwen36.attention",
         nodes=(
@@ -51,10 +56,11 @@ def attention_topology() -> Topology:
             TopologyNode("reader_k", "streamer", (), ("k",)),
             TopologyNode("reader_v", "streamer", (), ("v",)),
             TopologyNode("qk", "worker", ("q", "k"), ("s",),
-                         tile_rates=(("q", hd), ("k", hd))),
-            TopologyNode("softmax", "worker", ("s",), ("p",)),
+                         tile_rates=(("q", hd), ("k", hd), ("s", l))),
+            TopologyNode("softmax", "worker", ("s",), ("p",),
+                         tile_rates=(("s", l), ("p", l))),
             TopologyNode("pv", "worker", ("p", "v"), ("o",),
-                         tile_rates=(("p", hd), ("v", hd))),
+                         tile_rates=(("p", l), ("v", l))),
             TopologyNode("concat_heads", "hub", ("o",), ("attn",)),
             TopologyNode("writer", "tail", ("attn",), ()),
         ),

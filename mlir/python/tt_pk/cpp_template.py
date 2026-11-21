@@ -64,7 +64,9 @@ def _header(node: str, role: str, slot: str) -> str:
 
 # BRISC on a streamer: read each out-stream tile from DRAM interleaved,
 # push to the consumer core's CB slot (remote L1) and bump the consumer
-# sem. DRAM bank addressing via get_noc_addr_from_bank_id<true>.
+# sem. DRAM bank addressing via get_noc_addr_from_bank_id<true>. With
+# rate_out > 1 the body walks `rate_out` tiles per iter so one qk-style
+# row fans out from one producer step.
 def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     lines = [_header(node, "streamer", "BRISC"), _INCL_DATAFLOW, "",
              "void kernel_main() {",
@@ -89,35 +91,44 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
         tile = f"get_tile_size(cb_{e.stream})"
-        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
+        n = e.tile_rate_out
         lines.append(
-            f"        uint64_t {e.stream}_dram = "
+            f"        for (uint32_t t = 0; t < {n}; t++) {{")
+        lines.append(
+            f"            uint32_t tile_idx = i * {n} + t;")
+        lines.append(
+            f"            cb_reserve_back(cb_{e.stream}, 1);")
+        lines.append(
+            f"            uint64_t {e.stream}_dram = "
             f"get_noc_addr_from_bank_id<true>(")
         lines.append(
-            f"            {e.stream}_src_bank, "
-            f"{e.stream}_src_addr + i * {tile});")
+            f"                {e.stream}_src_bank, "
+            f"{e.stream}_src_addr + tile_idx * {tile});")
         lines.append(
-            f"        noc_async_read({e.stream}_dram, "
+            f"            noc_async_read({e.stream}_dram, "
             f"get_write_ptr(cb_{e.stream}), {tile});")
-        lines.append("        noc_async_read_barrier();")
+        lines.append("            noc_async_read_barrier();")
         lines.append(
-            f"        uint64_t {e.stream}_dest = get_noc_addr(")
+            f"            uint64_t {e.stream}_dest = get_noc_addr(")
         lines.append(
-            f"            {e.stream}_dest_x, {e.stream}_dest_y,")
+            f"                {e.stream}_dest_x, {e.stream}_dest_y,")
         lines.append(
-            f"            {e.stream}_dest_cb_addr + i * {tile});")
+            f"                {e.stream}_dest_cb_addr + "
+            f"tile_idx * {tile});")
         lines.append(
-            f"        noc_async_write(get_read_ptr(cb_{e.stream}), "
+            f"            noc_async_write(get_read_ptr(cb_{e.stream}), "
             f"{e.stream}_dest, {tile});")
-        lines.append("        noc_async_write_barrier();")
+        lines.append("            noc_async_write_barrier();")
         lines.append(
-            f"        uint64_t {e.stream}_sem = get_noc_addr(")
+            f"            uint64_t {e.stream}_sem = get_noc_addr(")
         lines.append(
-            f"            {e.stream}_dest_x, {e.stream}_dest_y, "
+            f"                {e.stream}_dest_x, {e.stream}_dest_y, "
             f"{e.stream}_dest_sem_addr);")
         lines.append(
-            f"        noc_semaphore_inc({e.stream}_sem, 1);")
-        lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
+            f"            noc_semaphore_inc({e.stream}_sem, 1);")
+        lines.append(
+            f"            cb_pop_front(cb_{e.stream}, 1);")
+        lines.append("        }")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -199,8 +210,9 @@ def _render_compute(
     return "\n".join(lines) + "\n"
 
 
-# NCRISC on a compute node: COMPUTE pushed into local out-CB; forward it
-# to each consumer core (push model), then bump the consumer sem.
+# NCRISC on a compute node: COMPUTE pushed rate_out tiles per iter into
+# local out-CB; NCRISC forwards each tile to the consumer core and bumps
+# the consumer sem per tile.
 def _render_compute_ncrisc(
     node: str, role: str, out_edges: List[SemEdge]
 ) -> str:
@@ -226,25 +238,36 @@ def _render_compute_ncrisc(
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
         tile = f"get_tile_size(cb_{e.stream})"
-        lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
+        n = e.tile_rate_out
         lines.append(
-            f"        uint64_t {e.stream}_dest = get_noc_addr(")
+            f"        cb_wait_front(cb_{e.stream}, {n});")
         lines.append(
-            f"            {e.stream}_dest_x, {e.stream}_dest_y,")
+            f"        for (uint32_t t = 0; t < {n}; t++) {{")
         lines.append(
-            f"            {e.stream}_dest_cb_addr + i * {tile});")
+            f"            uint32_t tile_idx = i * {n} + t;")
         lines.append(
-            f"        noc_async_write(get_read_ptr(cb_{e.stream}), "
-            f"{e.stream}_dest, {tile});")
-        lines.append("        noc_async_write_barrier();")
+            f"            uint64_t {e.stream}_dest = get_noc_addr(")
         lines.append(
-            f"        uint64_t {e.stream}_sem = get_noc_addr(")
+            f"                {e.stream}_dest_x, {e.stream}_dest_y,")
         lines.append(
-            f"            {e.stream}_dest_x, {e.stream}_dest_y, "
+            f"                {e.stream}_dest_cb_addr + "
+            f"tile_idx * {tile});")
+        lines.append(
+            f"            noc_async_write(")
+        lines.append(
+            f"                get_read_ptr(cb_{e.stream}) + t * {tile},")
+        lines.append(
+            f"                {e.stream}_dest, {tile});")
+        lines.append("            noc_async_write_barrier();")
+        lines.append(
+            f"            uint64_t {e.stream}_sem = get_noc_addr(")
+        lines.append(
+            f"                {e.stream}_dest_x, {e.stream}_dest_y, "
             f"{e.stream}_dest_sem_addr);")
         lines.append(
-            f"        noc_semaphore_inc({e.stream}_sem, 1);")
-        lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
+            f"            noc_semaphore_inc({e.stream}_sem, 1);")
+        lines.append("        }")
+        lines.append(f"        cb_pop_front(cb_{e.stream}, {n});")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
