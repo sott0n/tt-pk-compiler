@@ -40,13 +40,14 @@ class Topology:
 
 
 def attention_topology() -> Topology:
-    # hd: contraction width per output tile along the head dim (used by
-    #   qk's Q @ K^T, four Q tiles and four K tiles per S tile).
-    # l: contraction width along the key sequence dim (used by pv's
-    #   P @ V, two P and two V tiles per O tile), and also the row
-    #   width that softmax reduces over (L=2 S tiles per row).
-    # qk and softmax consequently push L S / P tiles per iter so the
-    # row reduction can stay on one consumer core.
+    # hd: contraction width per S output tile along the head dim (Q @
+    #   K^T, four Q and four K tiles per S tile).
+    # l: S/P row width softmax reduces over, and the P contraction
+    #   width per O tile (P @ V, two P and two V tiles per O tile).
+    # One qk / softmax / pv iter is one head: it emits L S, L P or HD_N
+    #   O tiles. The K and V reads per iter cover every output along the
+    #   N axis — eight K tiles (L × HD) feed the L S outputs, eight V
+    #   tiles feed the HD_N=HD O outputs.
     hd = 4
     l = 2
     return Topology(
@@ -56,11 +57,13 @@ def attention_topology() -> Topology:
             TopologyNode("reader_k", "streamer", (), ("k",)),
             TopologyNode("reader_v", "streamer", (), ("v",)),
             TopologyNode("qk", "worker", ("q", "k"), ("s",),
-                         tile_rates=(("q", hd), ("k", hd), ("s", l))),
+                         tile_rates=(("q", hd), ("k", hd * l),
+                                     ("s", l))),
             TopologyNode("softmax", "worker", ("s",), ("p",),
                          tile_rates=(("s", l), ("p", l))),
             TopologyNode("pv", "worker", ("p", "v"), ("o",),
-                         tile_rates=(("p", l), ("v", l))),
+                         tile_rates=(("p", l), ("v", l * hd),
+                                     ("o", hd))),
             TopologyNode("concat_heads", "hub", ("o",), ("attn",)),
             TopologyNode("writer", "tail", ("attn",), ()),
         ),
