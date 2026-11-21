@@ -195,7 +195,7 @@ Kept as legacy (do not delete, do not advance):
 | 2 | Strategy calculation (role + CB + sem + weight ring + state) |
 | 3 | Artifact A emit (TTNN Program MLIR) |
 | 4 | Artifact B emit (idiomatic C++ skeleton) |
-| 5 | Qwen3.6 Transformer-only E2E generate, tt-metal build + launch |
+| 5 | Qwen3.6 Transformer-only E2E generate, emit structure verify |
 | 6 | GDN topology added |
 
 ## Milestones
@@ -206,7 +206,7 @@ agent-side milestone (compute + run + verify).
 
 | Milestone | compiler-side | agent-side |
 |---|---|---|
-| M1 | 1 attention layer: strategy + .cpp skeleton emit (Phase 0-5) | compute + hw ±1e-3 |
+| M1 | 1 attention layer: strategy + .cpp skeleton emit (Phase 0-5) | compute + tt-metal build + launch + hw ±1e-3 |
 | M2 | 4-chip TP mesh variant of M1 (Phase 5 mesh) | QB2 run |
 | M3 | 1 GDN layer: strategy + .cpp skeleton (Phase 6) | compute + hw |
 | M4 | 48 GDN + 16 attn stacked decode strategy (Phase 6+) | full run + numerics |
