@@ -159,6 +159,7 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     lines.append(f"            cb_pop_front(cb_{s}, 1);")
     lines.append("        }")
     lines.append("    }")
+    lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -227,6 +228,7 @@ def _render_compute_brisc(
         lines.append(
             f"        cb_push_back(cb_{e.stream}, {e.tile_rate_in});")
     lines.append("    }")
+    lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -343,6 +345,7 @@ def _render_compute_ncrisc(
         lines.append("        }")
         lines.append(f"        cb_pop_front(cb_{e.stream}, {n});")
     lines.append("    }")
+    lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
@@ -410,6 +413,7 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
         f"            {s}_src_x, {s}_src_y, {s}_src_sem_back_addr);")
     lines.append("        noc_semaphore_inc(sem_back, 1);")
     lines.append("    }")
+    lines.append("    noc_async_atomic_barrier();")
     lines.append("}")
     return "\n".join(lines) + "\n"
 

@@ -100,7 +100,8 @@ def _check_slot(
         return
     if role == "streamer" and slot == "BRISC":
         for needle in ("noc_async_read_tile", "noc_async_write",
-                       "noc_semaphore_inc", "get_arg_val",
+                       "noc_semaphore_inc", "noc_async_atomic_barrier",
+                       "get_arg_val",
                        "TensorAccessor", "TensorAccessorArgs",
                        "get_semaphore", "cb_push_back"):
             if needle not in src:
@@ -109,6 +110,7 @@ def _check_slot(
         return
     if role == "tail" and slot == "NCRISC":
         for needle in ("noc_semaphore_wait_min", "noc_async_write_tile",
+                       "noc_async_atomic_barrier",
                        "get_arg_val", "TensorAccessor",
                        "TensorAccessorArgs", "get_semaphore",
                        "tt_l1_ptr"):
@@ -120,6 +122,7 @@ def _check_slot(
     if slot == "BRISC":
         if in_edges:
             for needle in ("noc_semaphore_wait_min", "cb_push_back",
+                           "noc_async_atomic_barrier",
                            "get_semaphore", "tt_l1_ptr"):
                 if needle not in src:
                     raise VerifyError(
@@ -129,8 +132,9 @@ def _check_slot(
     if slot == "NCRISC":
         if out_edges:
             for needle in ("cb_wait_front", "noc_async_write",
-                           "noc_semaphore_inc", "get_arg_val",
-                           "get_semaphore"):
+                           "noc_semaphore_inc",
+                           "noc_async_atomic_barrier",
+                           "get_arg_val", "get_semaphore"):
                 if needle not in src:
                     raise VerifyError(
                         f"{cpp_path}: NCRISC out-edges but missing "
