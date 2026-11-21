@@ -92,10 +92,17 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
     for e in out_edges:
         tile = f"get_tile_size(cb_{e.stream})"
         n = e.tile_rate_out
+        c = e.tile_cycle_out
         lines.append(
             f"        for (uint32_t t = 0; t < {n}; t++) {{")
         lines.append(
             f"            uint32_t tile_idx = i * {n} + t;")
+        if c > 0:
+            lines.append(
+                f"            uint32_t src_tile_idx = tile_idx % {c};")
+        else:
+            lines.append(
+                "            uint32_t src_tile_idx = tile_idx;")
         lines.append(
             f"            cb_reserve_back(cb_{e.stream}, 1);")
         lines.append(
@@ -103,7 +110,7 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
             f"get_noc_addr_from_bank_id<true>(")
         lines.append(
             f"                {e.stream}_src_bank, "
-            f"{e.stream}_src_addr + tile_idx * {tile});")
+            f"{e.stream}_src_addr + src_tile_idx * {tile});")
         lines.append(
             f"            noc_async_read({e.stream}_dram, "
             f"get_write_ptr(cb_{e.stream}), {tile});")

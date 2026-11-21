@@ -50,6 +50,11 @@ class SemEdge:
     # it produces).
     tile_rate_in: int = 1
     tile_rate_out: int = 1
+    # Unique tiles the producer walks before wrapping the DRAM / local
+    # address back to zero. 0 means linear addressing; a positive value
+    # lets the producer reuse the same cycle_out tiles across iters, as
+    # GQA's reader_k reuses one kv-head's eight K tiles.
+    tile_cycle_out: int = 0
 
 
 @dataclass(frozen=True)
@@ -150,6 +155,13 @@ def _tile_rate(node, stream: str) -> int:
     return 1
 
 
+def _tile_cycle(node, stream: str) -> int:
+    for s, c in node.output_cycle:
+        if s == stream:
+            return c
+    return 0
+
+
 def _derive_sem_graph(topology: Topology) -> Tuple[SemEdge, ...]:
     producers: Dict[str, str] = {}
     nodes_by_name = {n.name: n for n in topology.nodes}
@@ -163,12 +175,13 @@ def _derive_sem_graph(topology: Topology) -> Tuple[SemEdge, ...]:
             src_name = producers.get(stream)
             if src_name is None:
                 continue
+            src_node = nodes_by_name[src_name]
             out.append(SemEdge(
                 src=src_name, dst=node.name, stream=stream,
                 sem_id=sem_id,
                 tile_rate_in=_tile_rate(node, stream),
-                tile_rate_out=_tile_rate(nodes_by_name[src_name],
-                                         stream)))
+                tile_rate_out=_tile_rate(src_node, stream),
+                tile_cycle_out=_tile_cycle(src_node, stream)))
             sem_id += 1
     return tuple(out)
 

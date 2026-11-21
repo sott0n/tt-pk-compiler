@@ -31,6 +31,12 @@ class TopologyNode:
     # S tile", or a streamer say "my iter count is the per-stream tile
     # total" (default 1 already matches that for 1-stream streamers).
     tile_rates: Tuple[Tuple[str, int], ...] = ()
+    # Per-produced-stream cycle length: how many unique tiles the
+    # producer walks before looping its DRAM / local address back to
+    # zero. Unlisted streams default to no cycling (linear addressing).
+    # Lets reader_k read eight kv-head tiles and reuse them four times
+    # for GQA without changing the iter count.
+    output_cycle: Tuple[Tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -54,8 +60,10 @@ def attention_topology() -> Topology:
         name="qwen36.attention",
         nodes=(
             TopologyNode("reader_q", "streamer", (), ("q",)),
-            TopologyNode("reader_k", "streamer", (), ("k",)),
-            TopologyNode("reader_v", "streamer", (), ("v",)),
+            TopologyNode("reader_k", "streamer", (), ("k",),
+                         output_cycle=(("k", 8),)),
+            TopologyNode("reader_v", "streamer", (), ("v",),
+                         output_cycle=(("v", 8),)),
             TopologyNode("qk", "worker", ("q", "k"), ("s",),
                          tile_rates=(("q", hd), ("k", hd * l),
                                      ("s", l))),
