@@ -97,7 +97,7 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
             f"get_arg_val<uint32_t>({name_idx});")
     lines.append(
         f"    uint32_t {e.stream}_dest_sem_addr = "
-        f"reinterpret_cast<uint32_t>("
+        f"static_cast<uint32_t>("
         f"get_semaphore({e.stream}_dest_sem_id));")
     lines.append(
         f"    const auto {e.stream}_src_accessor = TensorAccessor(")
@@ -264,7 +264,7 @@ def _render_compute_ncrisc(
     for e in out_edges:
         lines.append(
             f"    uint32_t {e.stream}_dest_sem_addr = "
-            f"reinterpret_cast<uint32_t>("
+            f"static_cast<uint32_t>("
             f"get_semaphore({e.stream}_dest_sem_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
