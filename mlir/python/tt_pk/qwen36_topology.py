@@ -92,24 +92,33 @@ def decoder_layer_topology() -> Topology:
     )
 
 
-# GDN (Gated DeltaNet) decode-time topology, modeled after
-# tt-qwen-resident gdn/decode.recurrent_forward. The recurrent delta rule
-# reads and updates a persistent [B, H, K, V] state; conv state is per
-# q/k/v. "qkvz_proj" is the fused projection emitting q, k, v, gate.
+# GDN (Gated DeltaNet) decode-time topology, matching torch
+# gated_deltanet_forward end to end. qkvzba_proj is one fused projection
+# whose six output streams (q, k, v, z, beta_pre, a_pre) feed the rest:
+# convs + l2norm for q/k, v straight into the delta rule, beta_pre and
+# a_pre into the delta rule (sigmoid and -A_log*softplus(x+bias) stay in
+# the Agent compute body), z into rms_norm_gated as the output gate.
+# delta_rule holds the persistent [B, H, K, V] recurrent state and the
+# A_log parameter; convs carry per-stream state and bias.
 def gdn_topology() -> Topology:
     return Topology(
         name="qwen36.gdn",
         nodes=(
-            TopologyNode("qkvz_proj", "worker", ("x_norm",),
-                         ("q", "k", "v", "g")),
+            TopologyNode("x_norm_reader", "streamer", (), ("x_norm",)),
+            TopologyNode(
+                "qkvzba_proj", "worker", ("x_norm",),
+                ("q", "k", "v", "z", "beta_pre", "a_pre")),
             TopologyNode("q_conv", "worker", ("q",), ("q_c",)),
             TopologyNode("k_conv", "worker", ("k",), ("k_c",)),
             TopologyNode("v_conv", "worker", ("v",), ("v_c",)),
             TopologyNode("l2norm_q", "worker", ("q_c",), ("q_n",)),
             TopologyNode("l2norm_k", "worker", ("k_c",), ("k_n",)),
-            TopologyNode("silu_g", "worker", ("g",), ("g_a",)),
-            TopologyNode("delta_rule", "worker",
-                         ("q_n", "k_n", "v_c", "g_a"), ("o",)),
-            TopologyNode("o_proj", "worker", ("o",), ("gdn_out",)),
+            TopologyNode(
+                "delta_rule", "worker",
+                ("q_n", "k_n", "v_c", "beta_pre", "a_pre"), ("o",)),
+            TopologyNode("rms_norm_gated", "worker",
+                         ("o", "z"), ("o_norm",)),
+            TopologyNode("o_proj", "worker", ("o_norm",), ("gdn_out",)),
+            TopologyNode("gdn_writer", "tail", ("gdn_out",), ()),
         ),
     )
