@@ -64,59 +64,111 @@ _CPP_COMMON = (
     "for (uint32_t i = 0; i < iters; i++)",
 )
 _COMPUTE_GAP = ("// ===== Agent compute here =====", "// ===== end =====")
-_DATAFLOW_ROLES = ("streamer", "tail")
+
+# Must match _ROLE_SLOTS in cpp_template.
+_EXPECTED_SLOTS = {
+    "streamer": ("BRISC",),
+    "worker": ("BRISC", "COMPUTE", "NCRISC"),
+    "head": ("BRISC", "COMPUTE", "NCRISC"),
+    "hub": ("BRISC", "COMPUTE", "NCRISC"),
+    "leader": ("BRISC",),
+    "tail": ("NCRISC",),
+}
+
+
+def _check_slot(
+    cpp_path: str, src: str, role: str, slot: str, node: str,
+    in_edges, out_edges,
+) -> None:
+    for needle in _CPP_COMMON:
+        if needle not in src:
+            raise VerifyError(f"{cpp_path}: missing {needle!r}")
+    if slot == "COMPUTE":
+        for needle in _COMPUTE_GAP:
+            if needle not in src:
+                raise VerifyError(
+                    f"{cpp_path}: missing compute gap {needle!r}")
+        if "noc_async" in src or "noc_semaphore_inc" in src:
+            raise VerifyError(
+                f"{cpp_path}: COMPUTE slot must not call NOC")
+        if in_edges and "cb_wait_front" not in src:
+            raise VerifyError(
+                f"{cpp_path}: COMPUTE has in-edges but no cb_wait_front")
+        if out_edges and "cb_push_back" not in src:
+            raise VerifyError(
+                f"{cpp_path}: COMPUTE has out-edges but no cb_push_back")
+        return
+    if role == "streamer" and slot == "BRISC":
+        for needle in ("noc_async_read", "noc_async_write",
+                       "noc_semaphore_inc", "get_common_arg_val",
+                       "get_noc_addr_from_bank_id"):
+            if needle not in src:
+                raise VerifyError(
+                    f"{cpp_path}: streamer BRISC missing {needle!r}")
+        return
+    if role == "tail" and slot == "NCRISC":
+        for needle in ("noc_semaphore_wait_min", "noc_async_write",
+                       "get_common_arg_val",
+                       "get_noc_addr_from_bank_id"):
+            if needle not in src:
+                raise VerifyError(
+                    f"{cpp_path}: tail NCRISC missing {needle!r}")
+        return
+    # Compute-node BRISC/NCRISC data mover.
+    if slot == "BRISC":
+        if in_edges and "noc_semaphore_wait_min" not in src:
+            raise VerifyError(
+                f"{cpp_path}: BRISC in-edges but no sem wait")
+        if in_edges and "cb_push_back" not in src:
+            raise VerifyError(
+                f"{cpp_path}: BRISC in-edges but no local cb_push_back")
+        return
+    if slot == "NCRISC":
+        if out_edges:
+            for needle in ("cb_wait_front", "noc_async_write",
+                           "noc_semaphore_inc", "get_common_arg_val"):
+                if needle not in src:
+                    raise VerifyError(
+                        f"{cpp_path}: NCRISC out-edges but missing "
+                        f"{needle!r}")
+        return
+    raise VerifyError(
+        f"{cpp_path}: unhandled (role={role!r}, slot={slot!r})")
 
 
 def verify_structure(result: GenerationResult) -> None:
-    n_nodes = len(result.strategy.roles)
-    if len(result.cpp_paths) != n_nodes:
+    role_by_node = {r.node: r.role for r in result.strategy.roles}
+    expected_total = sum(len(_EXPECTED_SLOTS[r.role])
+                         for r in result.strategy.roles)
+    if len(result.cpp_paths) != expected_total:
         raise VerifyError(
-            f"cpp count {len(result.cpp_paths)} != node count {n_nodes}")
-
+            f"cpp count {len(result.cpp_paths)} != expected "
+            f"{expected_total} (sum of slots per node)")
+    per_node_slots: dict = {}
     for cpp_path in result.cpp_paths:
         with open(cpp_path) as f:
             src = f.read()
-        for needle in _CPP_COMMON:
-            if needle not in src:
-                raise VerifyError(f"{cpp_path}: missing {needle!r}")
-        role_match = re.search(r"// role: (\S+)\s+node: (\S+)", src)
-        if not role_match:
-            raise VerifyError(f"{cpp_path}: missing role/node header")
-        role, node = role_match.group(1), role_match.group(2)
-        is_dataflow = role in _DATAFLOW_ROLES
-        if not is_dataflow:
-            for needle in _COMPUTE_GAP:
-                if needle not in src:
-                    raise VerifyError(
-                        f"{cpp_path}: missing compute gap {needle!r}")
-        if role == "streamer":
-            if "noc_async_read" not in src:
-                raise VerifyError(
-                    f"{cpp_path}: streamer missing noc_async_read")
-            if "get_common_arg_val" not in src:
-                raise VerifyError(
-                    f"{cpp_path}: streamer missing DRAM address rt arg")
-        if role == "tail":
-            if "noc_async_write" not in src:
-                raise VerifyError(
-                    f"{cpp_path}: tail missing noc_async_write")
-            if "get_common_arg_val" not in src:
-                raise VerifyError(
-                    f"{cpp_path}: tail missing DRAM address rt arg")
-        node_edges_in = [e for e in result.strategy.sem_graph
-                         if e.dst == node]
-        node_edges_out = [e for e in result.strategy.sem_graph
-                          if e.src == node]
-        if node_edges_in and "noc_semaphore_wait_min" not in src:
+        hdr = re.search(
+            r"// role: (\S+)\s+node: (\S+)\s+slot: (\S+)", src)
+        if not hdr:
             raise VerifyError(
-                f"{cpp_path}: has in-edges but no sem wait")
-        if node_edges_out and "noc_semaphore_inc" not in src:
+                f"{cpp_path}: missing role/node/slot header")
+        role, node, slot = hdr.group(1), hdr.group(2), hdr.group(3)
+        if role_by_node.get(node) != role:
             raise VerifyError(
-                f"{cpp_path}: has out-edges but no sem inc")
-        if node_edges_in and "cb_wait_front" not in src:
-            raise VerifyError(f"{cpp_path}: has in-edges but no cb wait")
-        if node_edges_out and "cb_push_back" not in src:
-            raise VerifyError(f"{cpp_path}: has out-edges but no cb push")
+                f"{cpp_path}: role {role!r} mismatch strategy")
+        per_node_slots.setdefault(node, []).append(slot)
+        in_edges = [e for e in result.strategy.sem_graph
+                    if e.dst == node]
+        out_edges = [e for e in result.strategy.sem_graph
+                     if e.src == node]
+        _check_slot(cpp_path, src, role, slot, node, in_edges, out_edges)
+    for node, role in role_by_node.items():
+        expected = set(_EXPECTED_SLOTS[role])
+        got = set(per_node_slots.get(node, []))
+        if got != expected:
+            raise VerifyError(
+                f"node {node!r}: slots {got} != expected {expected}")
 
     with open(result.mlir_path) as f:
         mlir = f.read()

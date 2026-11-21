@@ -1,13 +1,20 @@
 """Idiomatic C++ skeleton generator (artifact B).
 
-Hand-written Python templates for persistent kernel skeletons.
+One topology node maps to 1-3 Tensix kernel slots (BRISC / NCRISC /
+COMPUTE). COMPUTE cannot touch the NOC, so data movement always lands
+on BRISC/NCRISC; compute math always lands on COMPUTE. Push model for
+cross-core forwarding (producer does `noc_async_write` to the consumer
+CB slot + remote `noc_semaphore_inc`). External I/O goes through DRAM
+interleaved banks (`get_noc_addr_from_bank_id`).
 
-- streamer: external DRAM → CB reader (full NOC body, no compute gap).
-- tail: CB → external DRAM writer (full NOC body, no compute gap).
-- worker / head / hub / leader: step loop + sem/CB sync + a commented
-  compute gap owned by the Agent.
+Role → kernel slots:
+  streamer: BRISC (DRAM read + push to consumer).
+  tail:     NCRISC (recv from upstream + DRAM write).
+  worker / head / hub: BRISC (recv upstream, push local CB for COMPUTE)
+    + COMPUTE (compute gap) + NCRISC (fwd to consumer).
+  leader:   BRISC (coordinator).
 
-Not EmitC. See mlir/INTERFACE.md § The two compiler artifacts / B.
+See mlir/INTERFACE.md § The two compiler artifacts / B.
 """
 
 from dataclasses import dataclass
@@ -20,13 +27,24 @@ from .strategy import SemEdge, Strategy
 class CppFile:
     role: str
     node: str
+    slot: str
     path: str
     source: str
 
 
-_COMPUTE_ROLES = ("worker", "head")
-_DATAFLOW_STREAMER = "streamer"
-_DATAFLOW_TAIL = "tail"
+_ROLE_SLOTS: Dict[str, Tuple[str, ...]] = {
+    "streamer": ("BRISC",),
+    "worker": ("BRISC", "COMPUTE", "NCRISC"),
+    "head": ("BRISC", "COMPUTE", "NCRISC"),
+    "hub": ("BRISC", "COMPUTE", "NCRISC"),
+    "leader": ("BRISC",),
+    "tail": ("NCRISC",),
+}
+
+_INCL_DATAFLOW = '#include "api/dataflow/dataflow_api.h"\n'
+_INCL_COMPUTE = (
+    '#include "api/compute/compute_kernel_hw_startup.h"\n'
+    '#include "api/compute/eltwise_unary/eltwise_unary.h"\n')
 
 
 def _edges_by_node(
@@ -40,22 +58,108 @@ def _edges_by_node(
     return in_edges, out_edges
 
 
-def _compute_include(role: str) -> str:
-    if role in _COMPUTE_ROLES:
-        return ('#include "api/compute/compute_kernel_hw_startup.h"\n'
-                '#include "api/compute/eltwise_unary/eltwise_unary.h"\n')
-    return '#include "api/dataflow/dataflow_api.h"\n'
+def _header(node: str, role: str, slot: str) -> str:
+    return f"// role: {role}  node: {node}  slot: {slot}\n"
 
 
-def _header(node: str, role: str) -> str:
-    return f"// role: {role}  node: {node}\n"
+# BRISC on a streamer: read each out-stream tile from DRAM interleaved,
+# push to the consumer core's CB slot (remote L1) and bump the consumer
+# sem. DRAM bank addressing via get_noc_addr_from_bank_id<true>.
+def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
+    lines = [_header(node, "streamer", "BRISC"), _INCL_DATAFLOW, "",
+             "void kernel_main() {",
+             "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
+    slot = 1
+    for e in out_edges:
+        lines.append(
+            f"    constexpr uint32_t cb_{e.stream} = "
+            f"get_compile_time_arg_val({slot});")
+        slot += 1
+    rt = 0
+    for e in out_edges:
+        for name in (f"{e.stream}_src_addr", f"{e.stream}_src_bank",
+                     f"{e.stream}_dest_x", f"{e.stream}_dest_y",
+                     f"{e.stream}_dest_cb_addr",
+                     f"{e.stream}_dest_sem_addr"):
+            lines.append(
+                f"    const uint32_t {name} = "
+                f"get_common_arg_val<uint32_t>({rt});")
+            rt += 1
+    lines.append("")
+    lines.append("    for (uint32_t i = 0; i < iters; i++) {")
+    for e in out_edges:
+        tile = f"get_tile_size(cb_{e.stream})"
+        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
+        lines.append(
+            f"        uint64_t {e.stream}_dram = "
+            f"get_noc_addr_from_bank_id<true>(")
+        lines.append(
+            f"            {e.stream}_src_bank, "
+            f"{e.stream}_src_addr + i * {tile});")
+        lines.append(
+            f"        noc_async_read({e.stream}_dram, "
+            f"get_write_ptr(cb_{e.stream}), {tile});")
+        lines.append("        noc_async_read_barrier();")
+        lines.append(
+            f"        uint64_t {e.stream}_dest = get_noc_addr(")
+        lines.append(
+            f"            {e.stream}_dest_x, {e.stream}_dest_y,")
+        lines.append(
+            f"            {e.stream}_dest_cb_addr + i * {tile});")
+        lines.append(
+            f"        noc_async_write(get_read_ptr(cb_{e.stream}), "
+            f"{e.stream}_dest, {tile});")
+        lines.append("        noc_async_write_barrier();")
+        lines.append(
+            f"        uint64_t {e.stream}_sem = get_noc_addr(")
+        lines.append(
+            f"            {e.stream}_dest_x, {e.stream}_dest_y, "
+            f"{e.stream}_dest_sem_addr);")
+        lines.append(
+            f"        noc_semaphore_inc({e.stream}_sem, 1);")
+        lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
+    lines.append("    }")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
 
 
+# BRISC on a compute node: upstream data lands in local CB L1 (producer
+# wrote it); BRISC waits the arrival sem and calls cb_push_back locally
+# so the local COMPUTE's cb_wait_front can see it.
+def _render_compute_brisc(
+    node: str, role: str, in_edges: List[SemEdge]
+) -> str:
+    lines = [_header(node, role, "BRISC"), _INCL_DATAFLOW, "",
+             "void kernel_main() {",
+             "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
+    slot = 1
+    for e in in_edges:
+        lines.append(
+            f"    constexpr uint32_t cb_{e.stream} = "
+            f"get_compile_time_arg_val({slot});")
+        slot += 1
+        lines.append(
+            f"    constexpr uint32_t sem_{e.stream}_in = "
+            f"get_compile_time_arg_val({slot});")
+        slot += 1
+    lines.append("")
+    lines.append("    for (uint32_t i = 0; i < iters; i++) {")
+    for e in in_edges:
+        lines.append(
+            f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
+        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
+        lines.append(f"        cb_push_back(cb_{e.stream}, 1);")
+    lines.append("    }")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+# COMPUTE: local CB wait, compute gap, local CB push. No NOC.
 def _render_compute(
     node: str, role: str, in_edges: List[SemEdge],
     out_edges: List[SemEdge],
 ) -> str:
-    lines = [_header(node, role), _compute_include(role), "",
+    lines = [_header(node, role, "COMPUTE"), _INCL_COMPUTE, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
     slot = 1
@@ -64,25 +168,17 @@ def _render_compute(
             f"    constexpr uint32_t cb_{e.stream} = "
             f"get_compile_time_arg_val({slot});  // in")
         slot += 1
-        lines.append(
-            f"    constexpr uint32_t sem_{e.stream}_in = "
-            f"get_compile_time_arg_val({slot});")
-        slot += 1
     for e in out_edges:
         lines.append(
             f"    constexpr uint32_t cb_{e.stream} = "
             f"get_compile_time_arg_val({slot});  // out")
         slot += 1
-        lines.append(
-            f"    constexpr uint32_t sem_{e.stream}_out = "
-            f"get_compile_time_arg_val({slot});")
-        slot += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
-        lines.append(
-            f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
         lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
+    for e in out_edges:
+        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
     lines.append("")
     lines.append("        // ===== Agent compute here =====")
     lines.append("        // ===== end =====")
@@ -90,17 +186,18 @@ def _render_compute(
     for e in in_edges:
         lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
     for e in out_edges:
-        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
         lines.append(f"        cb_push_back(cb_{e.stream}, 1);")
-        lines.append(f"        noc_semaphore_inc(sem_{e.stream}_out, 1);")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
 
-def _render_streamer(node: str, out_edges: List[SemEdge]) -> str:
-    lines = [_header(node, _DATAFLOW_STREAMER),
-             '#include "api/dataflow/dataflow_api.h"\n', "",
+# NCRISC on a compute node: COMPUTE pushed into local out-CB; forward it
+# to each consumer core (push model), then bump the consumer sem.
+def _render_compute_ncrisc(
+    node: str, role: str, out_edges: List[SemEdge]
+) -> str:
+    lines = [_header(node, role, "NCRISC"), _INCL_DATAFLOW, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
     slot = 1
@@ -109,40 +206,47 @@ def _render_streamer(node: str, out_edges: List[SemEdge]) -> str:
             f"    constexpr uint32_t cb_{e.stream} = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
-        lines.append(
-            f"    constexpr uint32_t sem_{e.stream}_out = "
-            f"get_compile_time_arg_val({slot});")
-        slot += 1
-    for idx, e in enumerate(out_edges):
-        lines.append(
-            f"    const uint32_t {e.stream}_src_addr = "
-            f"get_common_arg_val<uint32_t>({idx});")
+    rt = 0
+    for e in out_edges:
+        for name in (f"{e.stream}_dest_x", f"{e.stream}_dest_y",
+                     f"{e.stream}_dest_cb_addr",
+                     f"{e.stream}_dest_sem_addr"):
+            lines.append(
+                f"    const uint32_t {name} = "
+                f"get_common_arg_val<uint32_t>({rt});")
+            rt += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
         tile = f"get_tile_size(cb_{e.stream})"
-        lines.append(f"        cb_reserve_back(cb_{e.stream}, 1);")
+        lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
         lines.append(
-            f"        uint64_t {e.stream}_noc = get_noc_addr(")
+            f"        uint64_t {e.stream}_dest = get_noc_addr(")
         lines.append(
-            "            my_x[noc_index], my_y[noc_index],")
+            f"            {e.stream}_dest_x, {e.stream}_dest_y,")
         lines.append(
-            f"            {e.stream}_src_addr + i * {tile});")
+            f"            {e.stream}_dest_cb_addr + i * {tile});")
         lines.append(
-            f"        noc_async_read({e.stream}_noc, "
-            f"get_write_ptr(cb_{e.stream}), {tile});")
-    lines.append("        noc_async_read_barrier();")
-    for e in out_edges:
-        lines.append(f"        cb_push_back(cb_{e.stream}, 1);")
-        lines.append(f"        noc_semaphore_inc(sem_{e.stream}_out, 1);")
+            f"        noc_async_write(get_read_ptr(cb_{e.stream}), "
+            f"{e.stream}_dest, {tile});")
+        lines.append("        noc_async_write_barrier();")
+        lines.append(
+            f"        uint64_t {e.stream}_sem = get_noc_addr(")
+        lines.append(
+            f"            {e.stream}_dest_x, {e.stream}_dest_y, "
+            f"{e.stream}_dest_sem_addr);")
+        lines.append(
+            f"        noc_semaphore_inc({e.stream}_sem, 1);")
+        lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
 
-def _render_tail(node: str, in_edges: List[SemEdge]) -> str:
-    lines = [_header(node, _DATAFLOW_TAIL),
-             '#include "api/dataflow/dataflow_api.h"\n', "",
+# NCRISC on a tail: wait each in-edge sem, read from local CB, write to
+# DRAM interleaved bank.
+def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
+    lines = [_header(node, "tail", "NCRISC"), _INCL_DATAFLOW, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
     slot = 1
@@ -155,53 +259,80 @@ def _render_tail(node: str, in_edges: List[SemEdge]) -> str:
             f"    constexpr uint32_t sem_{e.stream}_in = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
-    for idx, e in enumerate(in_edges):
-        lines.append(
-            f"    const uint32_t {e.stream}_dst_addr = "
-            f"get_common_arg_val<uint32_t>({idx});")
+    rt = 0
+    for e in in_edges:
+        for name in (f"{e.stream}_dst_addr", f"{e.stream}_dst_bank"):
+            lines.append(
+                f"    const uint32_t {name} = "
+                f"get_common_arg_val<uint32_t>({rt});")
+            rt += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
+        tile = f"get_tile_size(cb_{e.stream})"
         lines.append(
             f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
         lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
-    for e in in_edges:
-        tile = f"get_tile_size(cb_{e.stream})"
         lines.append(
-            f"        uint64_t {e.stream}_noc = get_noc_addr(")
+            f"        uint64_t {e.stream}_dram = "
+            f"get_noc_addr_from_bank_id<false>(")
         lines.append(
-            "            my_x[noc_index], my_y[noc_index],")
-        lines.append(
-            f"            {e.stream}_dst_addr + i * {tile});")
+            f"            {e.stream}_dst_bank, "
+            f"{e.stream}_dst_addr + i * {tile});")
         lines.append(
             f"        noc_async_write(get_read_ptr(cb_{e.stream}), "
-            f"{e.stream}_noc, {tile});")
-    lines.append("        noc_async_write_barrier();")
-    for e in in_edges:
+            f"{e.stream}_dram, {tile});")
+        lines.append("        noc_async_write_barrier();")
         lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"
 
 
-def _render(
+# A leader is a single-BRISC coordinator; nothing else touches the NOC.
+def _render_leader_brisc(
+    node: str, in_edges: List[SemEdge], out_edges: List[SemEdge]
+) -> str:
+    # For now, a leader looks like a worker's BRISC body — gate the
+    # downstream stages by relaying in-edges. Agent refines.
+    return _render_compute_brisc(node, "leader", in_edges)
+
+
+def _render_node(
     node: str, role: str, in_edges: List[SemEdge],
     out_edges: List[SemEdge],
-) -> str:
-    if role == _DATAFLOW_STREAMER:
-        return _render_streamer(node, out_edges)
-    if role == _DATAFLOW_TAIL:
-        return _render_tail(node, in_edges)
-    return _render_compute(node, role, in_edges, out_edges)
+) -> List[CppFile]:
+    slots = _ROLE_SLOTS.get(role)
+    if slots is None:
+        raise ValueError(f"cpp_template: unknown role {role!r}")
+    files: List[CppFile] = []
+    for s in slots:
+        if role == "streamer" and s == "BRISC":
+            src = _render_streamer_brisc(node, out_edges)
+        elif role == "tail" and s == "NCRISC":
+            src = _render_tail_ncrisc(node, in_edges)
+        elif role == "leader" and s == "BRISC":
+            src = _render_leader_brisc(node, in_edges, out_edges)
+        elif s == "BRISC":
+            src = _render_compute_brisc(node, role, in_edges)
+        elif s == "COMPUTE":
+            src = _render_compute(node, role, in_edges, out_edges)
+        elif s == "NCRISC":
+            src = _render_compute_ncrisc(node, role, out_edges)
+        else:
+            raise ValueError(f"cpp_template: unhandled slot {s!r}")
+        path = f"{node}_{s.lower()}.cpp"
+        files.append(CppFile(role=role, node=node, slot=s, path=path,
+                             source=src))
+    return files
 
 
 def emit_cpp_skeleton(strategy: Strategy) -> Tuple[CppFile, ...]:
     in_edges, out_edges = _edges_by_node(strategy.sem_graph)
     out: List[CppFile] = []
     for r in strategy.roles:
-        src = _render(r.node, r.role,
-                      in_edges.get(r.node, []),
-                      out_edges.get(r.node, []))
-        out.append(CppFile(role=r.role, node=r.node,
-                           path=f"{r.node}.cpp", source=src))
+        out.extend(_render_node(
+            r.node, r.role,
+            in_edges.get(r.node, []),
+            out_edges.get(r.node, [])))
     return tuple(out)
