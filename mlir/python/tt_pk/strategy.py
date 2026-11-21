@@ -139,9 +139,23 @@ def _derive_cbs(
     for node in topology.nodes:
         for stream in node.produces:
             streams.setdefault(stream, cores_by_node[node.name])
+    # A stream's CB must hold at least one per-iter burst from the
+    # producer and from every consumer; double that for front/back overlap.
+    # cb_reserve_back(cb, rate) deadlocks when tile_count < rate.
+    max_rate: Dict[str, int] = {name: 1 for name in streams}
+    for node in topology.nodes:
+        for stream in node.produces:
+            if stream in max_rate:
+                max_rate[stream] = max(
+                    max_rate[stream], _tile_rate(node, stream))
+        for stream in node.consumes:
+            if stream in max_rate:
+                max_rate[stream] = max(
+                    max_rate[stream], _tile_rate(node, stream))
     out: List[CBLayout] = []
     for idx, (name, cores) in enumerate(streams.items()):
-        tile_count = overrides.get(name, 2)
+        default = max(2, 2 * max_rate[name])
+        tile_count = overrides.get(name, default)
         out.append(CBLayout(
             name=name, buffer_index=idx, dtype="bf16",
             page_size=2048, tile_count=tile_count, cores=cores))
