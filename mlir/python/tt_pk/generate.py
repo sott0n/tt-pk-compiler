@@ -100,7 +100,7 @@ def _check_slot(
         return
     if role == "streamer" and slot == "BRISC":
         for needle in ("noc_async_read", "noc_async_write",
-                       "noc_semaphore_inc", "get_common_arg_val",
+                       "noc_semaphore_inc", "get_arg_val",
                        "get_noc_addr_from_bank_id"):
             if needle not in src:
                 raise VerifyError(
@@ -108,8 +108,7 @@ def _check_slot(
         return
     if role == "tail" and slot == "NCRISC":
         for needle in ("noc_semaphore_wait_min", "noc_async_write",
-                       "get_common_arg_val",
-                       "get_noc_addr_from_bank_id"):
+                       "get_arg_val", "get_noc_addr_from_bank_id"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: tail NCRISC missing {needle!r}")
@@ -126,7 +125,7 @@ def _check_slot(
     if slot == "NCRISC":
         if out_edges:
             for needle in ("cb_wait_front", "noc_async_write",
-                           "noc_semaphore_inc", "get_common_arg_val"):
+                           "noc_semaphore_inc", "get_arg_val"):
                 if needle not in src:
                     raise VerifyError(
                         f"{cpp_path}: NCRISC out-edges but missing "

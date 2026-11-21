@@ -85,7 +85,7 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
                      f"{e.stream}_dest_sem_addr"):
             lines.append(
                 f"    const uint32_t {name} = "
-                f"get_common_arg_val<uint32_t>({rt});")
+                f"get_arg_val<uint32_t>({rt});")
             rt += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
@@ -232,7 +232,7 @@ def _render_compute_ncrisc(
                      f"{e.stream}_dest_sem_addr"):
             lines.append(
                 f"    const uint32_t {name} = "
-                f"get_common_arg_val<uint32_t>({rt});")
+                f"get_arg_val<uint32_t>({rt});")
             rt += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
@@ -294,7 +294,7 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
         for name in (f"{e.stream}_dst_addr", f"{e.stream}_dst_bank"):
             lines.append(
                 f"    const uint32_t {name} = "
-                f"get_common_arg_val<uint32_t>({rt});")
+                f"get_arg_val<uint32_t>({rt});")
             rt += 1
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
