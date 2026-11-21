@@ -100,9 +100,40 @@ class HardwareSpec:
     grid_y: int
     reserved_cores: Tuple[Tuple[int, int], ...] = ()
     default_compute_config: Optional[ComputeKernelConfig] = None
+    # Per-Tensix L1 budget used by strategy's constraint check. Default
+    # fits Blackhole p150 (1.5 MiB usable).
+    l1_bytes_per_core: int = 1536 * 1024
 
     def total_cores(self) -> int:
         return self.grid_x * self.grid_y - len(self.reserved_cores)
+
+
+# v2 roles. See mlir/INTERFACE.md § Parametric inputs. Strategy chooses
+# counts per role; topology only names which roles can appear.
+Role = str
+ROLES: Tuple[Role, ...] = ("streamer", "worker", "tail", "leader", "hub",
+                           "head")
+
+
+@dataclass(frozen=True)
+class MeshSpec:
+    tp_axis: int = 1
+    pp_axis: int = 1
+
+
+@dataclass(frozen=True)
+class StateBufferSpec:
+    name: str
+    tile_count: int
+    dtype: str = "bf16"
+
+
+@dataclass(frozen=True)
+class WeightRingSpec:
+    name: str
+    stages: int
+    tile_count: int
+    dtype: str = "bf16"
 
 
 @dataclass(frozen=True)
@@ -110,3 +141,6 @@ class AnalysisProblem:
     model_name: str
     layer: DecoderLayerSpec
     hardware: HardwareSpec
+    mesh: MeshSpec = MeshSpec()
+    state_buffers: Tuple[StateBufferSpec, ...] = ()
+    weight_rings: Tuple[WeightRingSpec, ...] = ()
