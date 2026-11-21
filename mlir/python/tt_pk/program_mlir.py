@@ -33,6 +33,14 @@ def _fmt_sem(e: SemEdge) -> str:
             f'stream = "{e.stream}">')
 
 
+# Backpressure sem travels the reverse direction so the receiver can tell
+# the producer that a ring slot is free; needs its own declaration so
+# tt-metal allocates matching L1 offsets on both ends.
+def _fmt_sem_back(e: SemEdge) -> str:
+    return (f'#tt_pk.sem<id = {e.sem_back_id}, src = "{e.dst}", '
+            f'dst = "{e.src}", stream = "{e.stream}_back">')
+
+
 def _fmt_ring(w: WeightRingLayout) -> str:
     return (f'#tt_pk.weight_ring<name = "{w.spec.name}", '
             f'stages = {w.spec.stages}, tile_count = {w.spec.tile_count}, '
@@ -63,8 +71,9 @@ def _emit_body(name: str, strategy: Strategy, mesh_attr: str = "") -> str:
         "tt_pk.roles = " + _fmt_list(_fmt_role(r) for r in strategy.roles))
     attrs.append(
         "tt_pk.cbs = " + _fmt_list(_fmt_cb(c) for c in strategy.cbs))
-    attrs.append(
-        "tt_pk.sems = " + _fmt_list(_fmt_sem(s) for s in strategy.sem_graph))
+    sems = [_fmt_sem(s) for s in strategy.sem_graph]
+    sems += [_fmt_sem_back(s) for s in strategy.sem_graph]
+    attrs.append("tt_pk.sems = " + _fmt_list(sems))
     attrs.append(
         "tt_pk.weight_rings = " + _fmt_list(
             _fmt_ring(w) for w in strategy.weight_rings))

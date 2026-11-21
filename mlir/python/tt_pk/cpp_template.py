@@ -78,81 +78,85 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
             f"streamer {node!r}: single out-edge only (got "
             f"{len(out_edges)})")
     e = out_edges[0]
+    s = e.stream
+    depth = e.ring_depth
     lines = [_header(node, "streamer", "BRISC"), _INCL_TENSOR, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
     lines.append(
-        f"    constexpr uint32_t cb_{e.stream} = "
-        f"get_compile_time_arg_val(1);")
+        f"    constexpr uint32_t cb_{s} = get_compile_time_arg_val(1);")
     lines.append(
-        f"    constexpr auto {e.stream}_src_args = "
-        f"TensorAccessorArgs<2>();")
+        f"    constexpr uint32_t ring_depth = {depth};")
+    lines.append(
+        f"    constexpr uint32_t sem_{s}_back_id = "
+        f"get_compile_time_arg_val(2);")
+    lines.append(
+        f"    constexpr auto {s}_src_args = TensorAccessorArgs<3>();")
     for name_idx, name in enumerate((
-            f"{e.stream}_src_addr", f"{e.stream}_dest_x",
-            f"{e.stream}_dest_y", f"{e.stream}_dest_cb_addr",
-            f"{e.stream}_dest_sem_id",
-            f"{e.stream}_src_tile_start")):
+            f"{s}_src_addr", f"{s}_dest_x",
+            f"{s}_dest_y", f"{s}_dest_cb_addr",
+            f"{s}_dest_sem_id",
+            f"{s}_src_tile_start")):
         lines.append(
             f"    const uint32_t {name} = "
             f"get_arg_val<uint32_t>({name_idx});")
     lines.append(
-        f"    uint32_t {e.stream}_dest_sem_addr = "
-        f"static_cast<uint32_t>("
-        f"get_semaphore({e.stream}_dest_sem_id));")
+        f"    uint32_t {s}_dest_sem_addr = "
+        f"static_cast<uint32_t>(get_semaphore({s}_dest_sem_id));")
     lines.append(
-        f"    const auto {e.stream}_src_accessor = TensorAccessor(")
+        f"    volatile tt_l1_ptr uint32_t* sem_{s}_back = ")
     lines.append(
-        f"        {e.stream}_src_args, {e.stream}_src_addr, "
-        f"get_tile_size(cb_{e.stream}));")
+        f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
+        f"get_semaphore(sem_{s}_back_id));")
+    lines.append(
+        f"    const auto {s}_src_accessor = TensorAccessor(")
+    lines.append(
+        f"        {s}_src_args, {s}_src_addr, get_tile_size(cb_{s}));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
-    tile = f"get_tile_size(cb_{e.stream})"
+    tile = f"get_tile_size(cb_{s})"
     n = e.tile_rate_out
     c = e.tile_cycle_out
     lines.append(
         f"        for (uint32_t t = 0; t < {n}; t++) {{")
-    lines.append(
-        f"            uint32_t tile_idx = i * {n} + t;")
+    lines.append(f"            uint32_t tile_idx = i * {n} + t;")
     if c > 0:
         lines.append(
             f"            uint32_t src_tile_idx = "
-            f"{e.stream}_src_tile_start + (tile_idx % {c});")
+            f"{s}_src_tile_start + (tile_idx % {c});")
     else:
         lines.append(
             f"            uint32_t src_tile_idx = "
-            f"{e.stream}_src_tile_start + tile_idx;")
+            f"{s}_src_tile_start + tile_idx;")
+    # Backpressure: wait for the receiver to free the ring slot this
+    # tile_idx maps to before overwriting it.
+    lines.append("            if (tile_idx >= ring_depth) {")
     lines.append(
-        f"            cb_reserve_back(cb_{e.stream}, 1);")
+        f"                noc_semaphore_wait_min(sem_{s}_back, "
+        f"tile_idx + 1 - ring_depth);")
+    lines.append("            }")
+    lines.append(f"            cb_reserve_back(cb_{s}, 1);")
     lines.append(
         f"            noc_async_read_tile(src_tile_idx, "
-        f"{e.stream}_src_accessor,")
-    lines.append(
-        f"                get_write_ptr(cb_{e.stream}));")
+        f"{s}_src_accessor,")
+    lines.append(f"                get_write_ptr(cb_{s}));")
     lines.append("            noc_async_read_barrier();")
-    # Push before forwarding so get_read_ptr returns the just-read slot;
-    # also balances cb_pop_front so pages_received/acked stay in sync.
+    lines.append(f"            cb_push_back(cb_{s}, 1);")
+    lines.append(f"            uint32_t slot = tile_idx % ring_depth;")
+    lines.append(f"            uint64_t {s}_dest = get_noc_addr(")
+    lines.append(f"                {s}_dest_x, {s}_dest_y,")
     lines.append(
-        f"            cb_push_back(cb_{e.stream}, 1);")
+        f"                {s}_dest_cb_addr + slot * {tile});")
     lines.append(
-        f"            uint64_t {e.stream}_dest = get_noc_addr(")
-    lines.append(
-        f"                {e.stream}_dest_x, {e.stream}_dest_y,")
-    lines.append(
-        f"                {e.stream}_dest_cb_addr + "
-        f"tile_idx * {tile});")
-    lines.append(
-        f"            noc_async_write(get_read_ptr(cb_{e.stream}), "
-        f"{e.stream}_dest, {tile});")
+        f"            noc_async_write(get_read_ptr(cb_{s}), "
+        f"{s}_dest, {tile});")
     lines.append("            noc_async_write_barrier();")
+    lines.append(f"            uint64_t {s}_sem = get_noc_addr(")
     lines.append(
-        f"            uint64_t {e.stream}_sem = get_noc_addr(")
-    lines.append(
-        f"                {e.stream}_dest_x, {e.stream}_dest_y, "
-        f"{e.stream}_dest_sem_addr);")
-    lines.append(
-        f"            noc_semaphore_inc({e.stream}_sem, 1);")
-    lines.append(
-        f"            cb_pop_front(cb_{e.stream}, 1);")
+        f"                {s}_dest_x, {s}_dest_y, "
+        f"{s}_dest_sem_addr);")
+    lines.append(f"            noc_semaphore_inc({s}_sem, 1);")
+    lines.append(f"            cb_pop_front(cb_{s}, 1);")
     lines.append("        }")
     lines.append("    }")
     lines.append("}")
@@ -178,20 +182,48 @@ def _render_compute_brisc(
             f"    constexpr uint32_t sem_{e.stream}_in_id = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
+        lines.append(
+            f"    constexpr uint32_t sem_{e.stream}_back_id = "
+            f"get_compile_time_arg_val({slot});")
+        slot += 1
+    rt = 0
+    for e in in_edges:
+        for name in (f"{e.stream}_src_x", f"{e.stream}_src_y"):
+            lines.append(
+                f"    const uint32_t {name} = "
+                f"get_arg_val<uint32_t>({rt});")
+            rt += 1
     for e in in_edges:
         lines.append(
             f"    volatile tt_l1_ptr uint32_t* sem_{e.stream}_in = ")
         lines.append(
             f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
             f"get_semaphore(sem_{e.stream}_in_id));")
+        lines.append(
+            f"    uint32_t {e.stream}_src_sem_back_addr = "
+            f"static_cast<uint32_t>("
+            f"get_semaphore(sem_{e.stream}_back_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
         lines.append(
             f"        noc_semaphore_wait_min(sem_{e.stream}_in, "
             f"(i + 1) * {e.tile_rate_in});")
+        # cb_reserve_back returning in iter i>=1 means COMPUTE popped
+        # the prior rate_in tiles, so the producer may overwrite those
+        # ring slots now.
         lines.append(
             f"        cb_reserve_back(cb_{e.stream}, {e.tile_rate_in});")
+        lines.append("        if (i > 0) {")
+        lines.append(
+            f"            uint64_t sem_back = get_noc_addr(")
+        lines.append(
+            f"                {e.stream}_src_x, {e.stream}_src_y, "
+            f"{e.stream}_src_sem_back_addr);")
+        lines.append(
+            f"            noc_semaphore_inc(sem_back, "
+            f"{e.tile_rate_in});")
+        lines.append("        }")
         lines.append(
             f"        cb_push_back(cb_{e.stream}, {e.tile_rate_in});")
     lines.append("    }")
@@ -256,6 +288,10 @@ def _render_compute_ncrisc(
             f"    constexpr uint32_t cb_{e.stream} = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
+        lines.append(
+            f"    constexpr uint32_t sem_{e.stream}_back_id = "
+            f"get_compile_time_arg_val({slot});")
+        slot += 1
     rt = 0
     for e in out_edges:
         for name in (f"{e.stream}_dest_x", f"{e.stream}_dest_y",
@@ -270,38 +306,40 @@ def _render_compute_ncrisc(
             f"    uint32_t {e.stream}_dest_sem_addr = "
             f"static_cast<uint32_t>("
             f"get_semaphore({e.stream}_dest_sem_id));")
+        lines.append(
+            f"    volatile tt_l1_ptr uint32_t* sem_{e.stream}_back = ")
+        lines.append(
+            f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
+            f"get_semaphore(sem_{e.stream}_back_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
         tile = f"get_tile_size(cb_{e.stream})"
         n = e.tile_rate_out
+        depth = e.ring_depth
+        lines.append(f"        cb_wait_front(cb_{e.stream}, {n});")
+        lines.append(f"        for (uint32_t t = 0; t < {n}; t++) {{")
+        lines.append(f"            uint32_t tile_idx = i * {n} + t;")
+        lines.append(f"            if (tile_idx >= {depth}) {{")
         lines.append(
-            f"        cb_wait_front(cb_{e.stream}, {n});")
+            f"                noc_semaphore_wait_min("
+            f"sem_{e.stream}_back, tile_idx + 1 - {depth});")
+        lines.append("            }")
         lines.append(
-            f"        for (uint32_t t = 0; t < {n}; t++) {{")
+            f"            uint32_t slot = tile_idx % {depth};")
+        lines.append(f"            uint64_t {e.stream}_dest = get_noc_addr(")
+        lines.append(f"                {e.stream}_dest_x, {e.stream}_dest_y,")
         lines.append(
-            f"            uint32_t tile_idx = i * {n} + t;")
-        lines.append(
-            f"            uint64_t {e.stream}_dest = get_noc_addr(")
-        lines.append(
-            f"                {e.stream}_dest_x, {e.stream}_dest_y,")
-        lines.append(
-            f"                {e.stream}_dest_cb_addr + "
-            f"tile_idx * {tile});")
-        lines.append(
-            f"            noc_async_write(")
-        lines.append(
-            f"                get_read_ptr(cb_{e.stream}) + t * {tile},")
-        lines.append(
-            f"                {e.stream}_dest, {tile});")
+            f"                {e.stream}_dest_cb_addr + slot * {tile});")
+        lines.append("            noc_async_write(")
+        lines.append(f"                get_read_ptr(cb_{e.stream}) + t * {tile},")
+        lines.append(f"                {e.stream}_dest, {tile});")
         lines.append("            noc_async_write_barrier();")
-        lines.append(
-            f"            uint64_t {e.stream}_sem = get_noc_addr(")
+        lines.append(f"            uint64_t {e.stream}_sem = get_noc_addr(")
         lines.append(
             f"                {e.stream}_dest_x, {e.stream}_dest_y, "
             f"{e.stream}_dest_sem_addr);")
-        lines.append(
-            f"            noc_semaphore_inc({e.stream}_sem, 1);")
+        lines.append(f"            noc_semaphore_inc({e.stream}_sem, 1);")
         lines.append("        }")
         lines.append(f"        cb_pop_front(cb_{e.stream}, {n});")
     lines.append("    }")
@@ -318,46 +356,59 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
             f"tail {node!r}: single in-edge only (got "
             f"{len(in_edges)})")
     e = in_edges[0]
+    s = e.stream
     lines = [_header(node, "tail", "NCRISC"), _INCL_TENSOR, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
     lines.append(
-        f"    constexpr uint32_t cb_{e.stream} = "
-        f"get_compile_time_arg_val(1);")
+        f"    constexpr uint32_t cb_{s} = get_compile_time_arg_val(1);")
     lines.append(
-        f"    constexpr uint32_t sem_{e.stream}_in_id = "
+        f"    constexpr uint32_t sem_{s}_in_id = "
         f"get_compile_time_arg_val(2);")
     lines.append(
-        f"    constexpr auto {e.stream}_dst_args = "
-        f"TensorAccessorArgs<3>();")
+        f"    constexpr uint32_t sem_{s}_back_id = "
+        f"get_compile_time_arg_val(3);")
     lines.append(
-        f"    volatile tt_l1_ptr uint32_t* sem_{e.stream}_in = ")
+        f"    constexpr auto {s}_dst_args = TensorAccessorArgs<4>();")
+    lines.append(
+        f"    volatile tt_l1_ptr uint32_t* sem_{s}_in = ")
     lines.append(
         f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
-        f"get_semaphore(sem_{e.stream}_in_id));")
+        f"get_semaphore(sem_{s}_in_id));")
     lines.append(
-        f"    const uint32_t {e.stream}_dst_addr = "
-        f"get_arg_val<uint32_t>(0);")
+        f"    uint32_t {s}_src_sem_back_addr = "
+        f"static_cast<uint32_t>(get_semaphore(sem_{s}_back_id));")
     lines.append(
-        f"    const uint32_t {e.stream}_dst_tile_start = "
+        f"    const uint32_t {s}_dst_addr = get_arg_val<uint32_t>(0);")
+    lines.append(
+        f"    const uint32_t {s}_dst_tile_start = "
         f"get_arg_val<uint32_t>(1);")
     lines.append(
-        f"    const auto {e.stream}_dst_accessor = TensorAccessor(")
+        f"    const uint32_t {s}_src_x = get_arg_val<uint32_t>(2);")
     lines.append(
-        f"        {e.stream}_dst_args, {e.stream}_dst_addr, "
-        f"get_tile_size(cb_{e.stream}));")
+        f"    const uint32_t {s}_src_y = get_arg_val<uint32_t>(3);")
+    lines.append(
+        f"    const auto {s}_dst_accessor = TensorAccessor(")
+    lines.append(
+        f"        {s}_dst_args, {s}_dst_addr, "
+        f"get_tile_size(cb_{s}));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     lines.append(
-        f"        noc_semaphore_wait_min(sem_{e.stream}_in, i + 1);")
-    lines.append(f"        cb_wait_front(cb_{e.stream}, 1);")
+        f"        noc_semaphore_wait_min(sem_{s}_in, i + 1);")
+    lines.append(f"        cb_wait_front(cb_{s}, 1);")
     lines.append(
-        f"        noc_async_write_tile({e.stream}_dst_tile_start + i,")
+        f"        noc_async_write_tile({s}_dst_tile_start + i,")
     lines.append(
-        f"            {e.stream}_dst_accessor, "
-        f"get_read_ptr(cb_{e.stream}));")
+        f"            {s}_dst_accessor, get_read_ptr(cb_{s}));")
     lines.append("        noc_async_write_barrier();")
-    lines.append(f"        cb_pop_front(cb_{e.stream}, 1);")
+    lines.append(f"        cb_pop_front(cb_{s}, 1);")
+    # Each pop frees one receiver slot; tell the producer it may now
+    # overwrite that ring position.
+    lines.append(f"        uint64_t sem_back = get_noc_addr(")
+    lines.append(
+        f"            {s}_src_x, {s}_src_y, {s}_src_sem_back_addr);")
+    lines.append("        noc_semaphore_inc(sem_back, 1);")
     lines.append("    }")
     lines.append("}")
     return "\n".join(lines) + "\n"

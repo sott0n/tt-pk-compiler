@@ -55,6 +55,12 @@ class SemEdge:
     # lets the producer reuse the same cycle_out tiles across iters, as
     # GQA's reader_k reuses one kv-head's eight K tiles.
     tile_cycle_out: int = 0
+    # Backpressure channel for the push model. The producer writes to the
+    # consumer CB at (tile_idx % ring_depth) * tile_size; it blocks on
+    # sem_back once it has filled the ring. The consumer bumps sem_back
+    # after it has freed the prior ring_depth tiles.
+    sem_back_id: int = -1
+    ring_depth: int = 0
 
 
 @dataclass(frozen=True)
@@ -254,12 +260,29 @@ def _check_l1_budget(
                 f"L1 over budget at {core}: {used} > {budget} bytes")
 
 
+def _attach_back_channels(
+    sem_graph: Tuple[SemEdge, ...], cbs: Tuple[CBLayout, ...],
+) -> Tuple[SemEdge, ...]:
+    depth_by_stream = {cb.name: cb.tile_count for cb in cbs}
+    next_id = max((e.sem_id for e in sem_graph), default=-1) + 1
+    out: List[SemEdge] = []
+    for e in sem_graph:
+        out.append(SemEdge(
+            src=e.src, dst=e.dst, stream=e.stream, sem_id=e.sem_id,
+            tile_rate_in=e.tile_rate_in, tile_rate_out=e.tile_rate_out,
+            tile_cycle_out=e.tile_cycle_out,
+            sem_back_id=next_id,
+            ring_depth=depth_by_stream[e.stream]))
+        next_id += 1
+    return tuple(out)
+
+
 def compute_strategy(
     problem: AnalysisProblem, topology: Topology, params: StrategyParams,
 ) -> Strategy:
     roles = _assign_roles(topology, problem.hardware, params, problem.mesh)
     cbs = _derive_cbs(topology, roles, params)
-    sem_graph = _derive_sem_graph(topology)
+    sem_graph = _attach_back_channels(_derive_sem_graph(topology), cbs)
     rings = _place_weight_rings(problem, roles)
     states = _place_state_buffers(problem, roles)
     _check_l1_budget(problem.hardware, cbs, rings, states)
