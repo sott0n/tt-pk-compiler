@@ -82,11 +82,16 @@ def _render_streamer_brisc(node: str, out_edges: List[SemEdge]) -> str:
         for name in (f"{e.stream}_src_addr", f"{e.stream}_src_bank",
                      f"{e.stream}_dest_x", f"{e.stream}_dest_y",
                      f"{e.stream}_dest_cb_addr",
-                     f"{e.stream}_dest_sem_addr"):
+                     f"{e.stream}_dest_sem_id"):
             lines.append(
                 f"    const uint32_t {name} = "
                 f"get_arg_val<uint32_t>({rt});")
             rt += 1
+    for e in out_edges:
+        lines.append(
+            f"    uint32_t {e.stream}_dest_sem_addr = "
+            f"reinterpret_cast<uint32_t>("
+            f"get_semaphore({e.stream}_dest_sem_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
@@ -157,9 +162,15 @@ def _render_compute_brisc(
             f"get_compile_time_arg_val({slot});")
         slot += 1
         lines.append(
-            f"    constexpr uint32_t sem_{e.stream}_in = "
+            f"    constexpr uint32_t sem_{e.stream}_in_id = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
+    for e in in_edges:
+        lines.append(
+            f"    volatile tt_l1_ptr uint32_t* sem_{e.stream}_in = ")
+        lines.append(
+            f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
+            f"get_semaphore(sem_{e.stream}_in_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in in_edges:
@@ -236,11 +247,16 @@ def _render_compute_ncrisc(
     for e in out_edges:
         for name in (f"{e.stream}_dest_x", f"{e.stream}_dest_y",
                      f"{e.stream}_dest_cb_addr",
-                     f"{e.stream}_dest_sem_addr"):
+                     f"{e.stream}_dest_sem_id"):
             lines.append(
                 f"    const uint32_t {name} = "
                 f"get_arg_val<uint32_t>({rt});")
             rt += 1
+    for e in out_edges:
+        lines.append(
+            f"    uint32_t {e.stream}_dest_sem_addr = "
+            f"reinterpret_cast<uint32_t>("
+            f"get_semaphore({e.stream}_dest_sem_id));")
     lines.append("")
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     for e in out_edges:
@@ -293,9 +309,15 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
             f"get_compile_time_arg_val({slot});")
         slot += 1
         lines.append(
-            f"    constexpr uint32_t sem_{e.stream}_in = "
+            f"    constexpr uint32_t sem_{e.stream}_in_id = "
             f"get_compile_time_arg_val({slot});")
         slot += 1
+    for e in in_edges:
+        lines.append(
+            f"    volatile tt_l1_ptr uint32_t* sem_{e.stream}_in = ")
+        lines.append(
+            f"        reinterpret_cast<volatile tt_l1_ptr uint32_t*>("
+            f"get_semaphore(sem_{e.stream}_in_id));")
     rt = 0
     for e in in_edges:
         for name in (f"{e.stream}_dst_addr", f"{e.stream}_dst_bank"):

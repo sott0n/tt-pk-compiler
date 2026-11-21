@@ -101,31 +101,34 @@ def _check_slot(
     if role == "streamer" and slot == "BRISC":
         for needle in ("noc_async_read", "noc_async_write",
                        "noc_semaphore_inc", "get_arg_val",
-                       "get_noc_addr_from_bank_id"):
+                       "get_noc_addr_from_bank_id", "get_semaphore"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: streamer BRISC missing {needle!r}")
         return
     if role == "tail" and slot == "NCRISC":
         for needle in ("noc_semaphore_wait_min", "noc_async_write",
-                       "get_arg_val", "get_noc_addr_from_bank_id"):
+                       "get_arg_val", "get_noc_addr_from_bank_id",
+                       "get_semaphore", "tt_l1_ptr"):
             if needle not in src:
                 raise VerifyError(
                     f"{cpp_path}: tail NCRISC missing {needle!r}")
         return
     # Compute-node BRISC/NCRISC data mover.
     if slot == "BRISC":
-        if in_edges and "noc_semaphore_wait_min" not in src:
-            raise VerifyError(
-                f"{cpp_path}: BRISC in-edges but no sem wait")
-        if in_edges and "cb_push_back" not in src:
-            raise VerifyError(
-                f"{cpp_path}: BRISC in-edges but no local cb_push_back")
+        if in_edges:
+            for needle in ("noc_semaphore_wait_min", "cb_push_back",
+                           "get_semaphore", "tt_l1_ptr"):
+                if needle not in src:
+                    raise VerifyError(
+                        f"{cpp_path}: BRISC in-edges but missing "
+                        f"{needle!r}")
         return
     if slot == "NCRISC":
         if out_edges:
             for needle in ("cb_wait_front", "noc_async_write",
-                           "noc_semaphore_inc", "get_arg_val"):
+                           "noc_semaphore_inc", "get_arg_val",
+                           "get_semaphore"):
                 if needle not in src:
                     raise VerifyError(
                         f"{cpp_path}: NCRISC out-edges but missing "
