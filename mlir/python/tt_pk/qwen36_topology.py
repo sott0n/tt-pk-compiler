@@ -38,10 +38,12 @@ def attention_topology() -> Topology:
     return Topology(
         name="qwen36.attention",
         nodes=(
+            TopologyNode("reader", "streamer", (), ("q", "k", "v")),
             TopologyNode("qk", "worker", ("q", "k"), ("s",)),
             TopologyNode("softmax", "worker", ("s",), ("p",)),
             TopologyNode("pv", "worker", ("p", "v"), ("o",)),
             TopologyNode("concat_heads", "hub", ("o",), ("attn",)),
+            TopologyNode("writer", "tail", ("attn",), ()),
         ),
     )
 

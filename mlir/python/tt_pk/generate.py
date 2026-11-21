@@ -58,13 +58,13 @@ def generate(
         cpp_paths=tuple(cpp_paths))
 
 
-_CPP_REQUIRED = (
+_CPP_COMMON = (
     "void kernel_main()",
     "get_compile_time_arg_val(0)",
     "for (uint32_t i = 0; i < iters; i++)",
-    "// ===== Agent compute here =====",
-    "// ===== end =====",
 )
+_COMPUTE_GAP = ("// ===== Agent compute here =====", "// ===== end =====")
+_DATAFLOW_ROLES = ("streamer", "tail")
 
 
 def verify_structure(result: GenerationResult) -> None:
@@ -76,13 +76,33 @@ def verify_structure(result: GenerationResult) -> None:
     for cpp_path in result.cpp_paths:
         with open(cpp_path) as f:
             src = f.read()
-        for needle in _CPP_REQUIRED:
+        for needle in _CPP_COMMON:
             if needle not in src:
                 raise VerifyError(f"{cpp_path}: missing {needle!r}")
         role_match = re.search(r"// role: (\S+)\s+node: (\S+)", src)
         if not role_match:
             raise VerifyError(f"{cpp_path}: missing role/node header")
         role, node = role_match.group(1), role_match.group(2)
+        is_dataflow = role in _DATAFLOW_ROLES
+        if not is_dataflow:
+            for needle in _COMPUTE_GAP:
+                if needle not in src:
+                    raise VerifyError(
+                        f"{cpp_path}: missing compute gap {needle!r}")
+        if role == "streamer":
+            if "noc_async_read" not in src:
+                raise VerifyError(
+                    f"{cpp_path}: streamer missing noc_async_read")
+            if "get_common_arg_val" not in src:
+                raise VerifyError(
+                    f"{cpp_path}: streamer missing DRAM address rt arg")
+        if role == "tail":
+            if "noc_async_write" not in src:
+                raise VerifyError(
+                    f"{cpp_path}: tail missing noc_async_write")
+            if "get_common_arg_val" not in src:
+                raise VerifyError(
+                    f"{cpp_path}: tail missing DRAM address rt arg")
         node_edges_in = [e for e in result.strategy.sem_graph
                          if e.dst == node]
         node_edges_out = [e for e in result.strategy.sem_graph

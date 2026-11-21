@@ -37,9 +37,11 @@ def main():
     _run("decoder_tp1", decoder_layer_topology(),
          StrategyParams(roles=RoleCount(worker=36)))
     _run("attention_tp1", attention_topology(),
-         StrategyParams(roles=RoleCount(worker=24, hub=4)))
+         StrategyParams(roles=RoleCount(streamer=4, worker=24, hub=4,
+                                       tail=4)))
     _run("attention_tp4", attention_topology(),
-         StrategyParams(roles=RoleCount(worker=96, hub=4)),
+         StrategyParams(roles=RoleCount(streamer=16, worker=96, hub=4,
+                                       tail=16)),
          mesh=MeshSpec(tp_axis=4))
     _run("gdn_tp1", gdn_topology(),
          StrategyParams(roles=RoleCount(worker=54)))
