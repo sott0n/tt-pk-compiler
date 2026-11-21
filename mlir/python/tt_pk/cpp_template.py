@@ -350,9 +350,10 @@ def _render_compute_ncrisc(
     return "\n".join(lines) + "\n"
 
 
-# NCRISC on a tail: wait the in-edge sem, read from the local CB, and
-# write to the DRAM-interleaved output tensor via a TensorAccessor.
-# Single in-edge only.
+# NCRISC on a tail: wait the in-edge sem, read the receiver ring slot the
+# producer wrote this iter, and stream the tile to the DRAM output tensor.
+# No CB protocol: the receiver CB is addressed as a plain L1 ring because
+# nothing on this core pushes into it. Single in-edge only.
 def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
     if len(in_edges) != 1:
         raise ValueError(
@@ -360,6 +361,7 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
             f"{len(in_edges)})")
     e = in_edges[0]
     s = e.stream
+    depth = e.ring_depth
     lines = [_header(node, "tail", "NCRISC"), _INCL_TENSOR, "",
              "void kernel_main() {",
              "    constexpr uint32_t iters = get_compile_time_arg_val(0);"]
@@ -371,6 +373,8 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
     lines.append(
         f"    constexpr uint32_t sem_{s}_back_id = "
         f"get_compile_time_arg_val(3);")
+    lines.append(
+        f"    constexpr uint32_t ring_depth = {depth};")
     lines.append(
         f"    constexpr auto {s}_dst_args = TensorAccessorArgs<4>();")
     lines.append(
@@ -399,15 +403,14 @@ def _render_tail_ncrisc(node: str, in_edges: List[SemEdge]) -> str:
     lines.append("    for (uint32_t i = 0; i < iters; i++) {")
     lines.append(
         f"        noc_semaphore_wait_min(sem_{s}_in, i + 1);")
-    lines.append(f"        cb_wait_front(cb_{s}, 1);")
+    lines.append(f"        uint32_t slot = i % ring_depth;")
     lines.append(
         f"        noc_async_write_tile({s}_dst_tile_start + i,")
     lines.append(
-        f"            {s}_dst_accessor, get_read_ptr(cb_{s}));")
+        f"            {s}_dst_accessor,")
+    lines.append(
+        f"            get_read_ptr(cb_{s}) + slot * get_tile_size(cb_{s}));")
     lines.append("        noc_async_write_barrier();")
-    lines.append(f"        cb_pop_front(cb_{s}, 1);")
-    # Each pop frees one receiver slot; tell the producer it may now
-    # overwrite that ring position.
     lines.append(f"        uint64_t sem_back = get_noc_addr(")
     lines.append(
         f"            {s}_src_x, {s}_src_y, {s}_src_sem_back_addr);")
